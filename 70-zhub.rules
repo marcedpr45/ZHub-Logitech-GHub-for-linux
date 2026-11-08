@@ -1,0 +1,4 @@
+# Acceso de la sesión activa a los dispositivos HID Logitech (DPI, tasa de respuesta, batería, G600).
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", TAG+="uaccess"
+# Ajustes del G923 expuestos por su controlador (giro y funciones wheel_*).
+ACTION=="bind", SUBSYSTEM=="hid", ENV{HID_ID}=="0003:0000046D:0000C26E", RUN+="/bin/sh -c 'chgrp input /sys%p/range /sys%p/wheel_* 2>/dev/null; chmod g+w /sys%p/range /sys%p/wheel_* 2>/dev/null; true'"
