@@ -54,7 +54,6 @@ class DeviceSpec:
     inputs: dict[int, str] = field(default_factory=dict)  # código evdev -> id botón
     defaults: dict[str, dict] = field(default_factory=dict)
     hidpp: bool = False
-    firmware_gshift: bool = False  # el firmware envía Mayús + tecla en la capa G-Shift
     experimental: bool = False  # sin probar aún con el hardware conectado
     dpi_min: int = 200
     dpi_max: int = 12000
@@ -113,6 +112,9 @@ G600 = DeviceSpec(
         "g3": "Rueda (G3)",
         "g4": "Inclinar rueda izq. (G4)",
         "g5": "Inclinar rueda der. (G5)",
+        "g6": "Botón del anular (G6)",
+        "g7": "Botón G7",
+        "g8": "Botón G8",
         **{f"g{9 + i}": f"Lateral G{9 + i}" for i in range(12)},
     },
     inputs={
@@ -121,6 +123,9 @@ G600 = DeviceSpec(
         e.BTN_MIDDLE: "g3",
         e.BTN_SIDE: "g4",
         e.BTN_EXTRA: "g5",
+        e.KEY_F13: "g6",
+        e.KEY_F14: "g7",
+        e.KEY_F15: "g8",
         **{code: f"g{9 + i}" for i, code in enumerate(_G600_SIDE)},
     },
     defaults={
@@ -129,9 +134,11 @@ G600 = DeviceSpec(
         "g3": mouse(3),
         "g4": mouse(4),
         "g5": mouse(5),
+        "g6": {"type": "gshift"},
+        "g7": {"type": "dpi", "op": "cycle"},
+        "g8": {"type": "profile_cycle"},
         **{f"g{9 + i}": {"type": "key", "keys": [key_name(c)]} for i, c in enumerate(_G600_SIDE)},
     },
-    firmware_gshift=True,
     experimental=True,
     dpi_max=8200,
     max_levels=4,

@@ -2,8 +2,8 @@
 
 Perfiles por aplicación y configuración de periféricos Logitech en Linux, inspirado en el funcionamiento de G HUB en Windows.
 
-> **Estado del proyecto: temprano.** Solo el **G305 Lightspeed** se ha probado con hardware real.
-> El **G600** y el **G923 Xbox** están implementados pero **no se han probado todavía**.
+> **Estado del proyecto: temprano.** El **G305 Lightspeed** se ha probado con hardware real.
+> El **G600** y el **G923 Xbox** se han probado **solo en parte** (ver la tabla) y todavía no dentro de un juego.
 > El **resto de periféricos Logitech no están verificados** y no aparecerán en ZHub.
 
 ![Inicio con un G305 conectado](docs/screenshots/inicio.png)
@@ -13,8 +13,8 @@ Perfiles por aplicación y configuración de periféricos Logitech en Linux, ins
 | Dispositivo | Estado | Funciones |
 |---|---|---|
 | G305 Lightspeed | **Probado** | DPI, DPI Shift, 125–1000 Hz, botones, G-Shift, batería, firmware |
-| G600 MMO | **Sin probar** | DPI, tasa de respuesta, RGB, 12 botones laterales, G-Shift. G6, G7 y G8 siguen en el firmware |
-| G923 Xbox | **Sin probar** | Radio de giro, autocentrado, fuerza, amortiguación, curvas, pedales combinados |
+| G600 MMO | **Parcial** | Probados G6–G9 y G-Shift. Falta comprobar a simple vista DPI, tasa de respuesta y RGB. Usa el tercer modo de memoria del ratón; los dos de G HUB no se tocan |
+| G923 Xbox | **Parcial** | Probados la lectura en vivo de volante y pedales y los pedales combinados. Falta probar en juegos el radio de giro, autocentrado, fuerza, amortiguación y curvas |
 | Otros Logitech | **No verificados** | No soportados |
 
 Probado en CachyOS con KDE Plasma 6 sobre Wayland. La detección de ventana activa usa KWin, así que otros escritorios no cambian de perfil automáticamente.
@@ -33,6 +33,7 @@ Las curvas y los pedales combinados del G923 usan un volante virtual; algunos ju
 - Macros (una vez, mantener, alternar) con grabación.
 - Importación de perfiles, botones y macros desde una instalación de G HUB en una partición de Windows.
 - Alta de perfiles para los juegos de Steam instalados.
+- Volante y pedales del G923 en tiempo real.
 - Aviso cuando el G HUB instalado trae un firmware más nuevo; la actualización se hace desde Windows.
 
 Las imágenes de los dispositivos no se incluyen en el proyecto: ZHub las lee de tu propia instalación de G HUB. Sin ella, muestra una lista de botones.
@@ -71,7 +72,7 @@ Vista previa de funciones **sin probar con hardware real**:
 
 | G600: iluminación | G923: volante |
 |---|---|
-| ![Iluminación del G600, sin probar](docs/screenshots/g600-sin-probar.png) | ![Volante G923, sin probar](docs/screenshots/g923-sin-probar.png) |
+| ![Iluminación del G600](docs/screenshots/g600-sin-probar.png) | ![Volante G923](docs/screenshots/g923-sin-probar.png) |
 
 ## Desarrollo
 

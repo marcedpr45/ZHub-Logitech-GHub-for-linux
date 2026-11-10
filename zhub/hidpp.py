@@ -24,6 +24,20 @@ class HidppError(Exception):
         self.code = code
 
 
+def usb_version(pid: int) -> str:
+    """Versión que declara un dispositivo USB de Logitech, como 77.02."""
+    for node in glob.glob("/sys/bus/usb/devices/*/idProduct"):
+        folder = os.path.dirname(node)
+        try:
+            with open(node) as f, open(folder + "/idVendor") as v, open(folder + "/bcdDevice") as b:
+                if v.read().strip() == "046d" and int(f.read(), 16) == pid:
+                    text = b.read().strip()
+                    return f"{text[:2]}.{text[2:]}"
+        except OSError:
+            continue
+    return ""
+
+
 def _uevent(path: str) -> dict[str, str]:
     with open(path) as f:
         return dict(line.strip().split("=", 1) for line in f if "=" in line)

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QSystemTrayIcon, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import assets, ghub_import
+from . import assets, ghub_import, wheel as wheel_io
 from .devices import CATALOG, DeviceSpec, key_name
 from .engine import Engine
 from .kwin import WindowBridge
@@ -342,6 +342,96 @@ class DpiBar(QWidget):
         p.end()
 
 
+class LiveWheel(QWidget):
+    """Foto del volante que gira con el físico e indica los grados."""
+
+    SIDE = 260
+
+    def __init__(self, path: Path | None):
+        super().__init__()
+        self.pix = QPixmap(str(path) if path else "")
+        if not self.pix.isNull():
+            self.pix = self.pix.scaledToHeight(2 * self.SIDE, Qt.TransformationMode.SmoothTransformation)
+        self.angle = 0.0
+        self.setFixedHeight(self.SIDE + 34)
+
+    def set_angle(self, angle: float) -> None:
+        if angle != self.angle:
+            self.angle = angle
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.save()
+        p.translate(self.width() / 2, self.SIDE / 2)
+        p.rotate(self.angle)
+        p.drawPixmap(QRectF(-self.SIDE / 2, -self.SIDE / 2, self.SIDE, self.SIDE).toRect(), self.pix)
+        p.restore()
+        side = "Centro" if abs(self.angle) < 2 else f"{abs(self.angle):.0f}° {'derecha' if self.angle > 0 else 'izquierda'}"
+        p.setPen(QColor("#ffffff"))
+        p.drawText(QRectF(0, self.SIDE + 4, self.width(), 28), Qt.AlignmentFlag.AlignCenter, side)
+        p.end()
+
+
+class PedalBars(QWidget):
+    """Recorrido de cada pedal; si están combinados, embrague y una barra centrada."""
+
+    PEDALS = (("clutch", "Embrague"), ("brake", "Freno"), ("throttle", "Acelerador"))
+
+    def __init__(self):
+        super().__init__()
+        self.values = {key: 0.0 for key, _ in self.PEDALS}
+        self.combined = False
+        self.setFixedHeight(240)
+        self.setMinimumWidth(270)
+
+    def set_values(self, values: dict[str, float], combined: bool = False) -> None:
+        current = {key: values[key] for key, _ in self.PEDALS}
+        if current != self.values or combined != self.combined:
+            self.values, self.combined = current, combined
+            self.update()
+
+    def paint_combined(self, p: QPainter, column: float, top: int, track: int) -> None:
+        net = self.values["throttle"] - self.values["brake"]
+        percent = round(abs(net) * 100)
+        x, mid, fill = column + (column - 34) / 2, top + track / 2, track / 2 * abs(net)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#33373f"))
+        p.drawRoundedRect(QRectF(x, top, 34, track), 3, 3)
+        p.setBrush(QColor("#00b8fc"))
+        p.drawRect(QRectF(x, mid - fill if net > 0 else mid, 34, fill))
+        p.setPen(QPen(QColor("#ffffff"), 1))
+        p.drawLine(QPointF(x - 5, mid), QPointF(x + 39, mid))
+        p.drawText(QRectF(column, 2, column, 24), Qt.AlignmentFlag.AlignCenter, f"{percent} %")
+        name = "Combinados" if not percent else "Acelerador" if net > 0 else "Freno"
+        p.setPen(QColor("#8d939e"))
+        p.drawText(QRectF(column, top + track + 6, column, 24), Qt.AlignmentFlag.AlignCenter, name)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pedals = self.PEDALS[:1] if self.combined else self.PEDALS
+        column = self.width() / (2 if self.combined else len(self.PEDALS))
+        top, track = 30, self.height() - 62
+        if self.combined:
+            self.paint_combined(p, column, top, track)
+        for i, (key, name) in enumerate(pedals):
+            x = column * i + (column - 34) / 2
+            fill = track * self.values[key]
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#33373f"))
+            p.drawRoundedRect(QRectF(x, top, 34, track), 3, 3)
+            p.setBrush(QColor("#00b8fc"))
+            p.drawRoundedRect(QRectF(x, top + track - fill, 34, fill), 3, 3)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRectF(column * i, 2, column, 24), Qt.AlignmentFlag.AlignCenter, f"{round(self.values[key] * 100)} %")
+            p.setPen(QColor("#8d939e"))
+            p.drawText(QRectF(column * i, top + track + 6, column, 24), Qt.AlignmentFlag.AlignCenter, name)
+        p.end()
+
+
 class DeviceCanvas(QWidget):
     """Foto del dispositivo con marcadores y etiquetas en las posiciones de G HUB."""
 
@@ -441,6 +531,10 @@ class DevicePage(QWidget):
         else:
             self.section("Volante", self.wheel_page())
             self.section("Pedales", self.pedals_page())
+            self.axes: wheel_io.LiveAxes | None = None
+            self.live_timer = QTimer(self)
+            self.live_timer.timeout.connect(self.tick_live)
+            self.live_timer.start(33)
         self.rail.setCurrentRow(0)
 
     def section(self, name: str, page: QWidget) -> None:
@@ -724,7 +818,8 @@ class DevicePage(QWidget):
     def wheel_page(self) -> QWidget:
         page = QWidget()
         root = QVBoxLayout(page)
-        root.addWidget(self.picture("wheel_image_front", 260))
+        self.live_wheel = LiveWheel(assets.image(self.spec.id, "wheel_image_front"))
+        root.addWidget(self.live_wheel)
         frame, lay = card()
         lay.addWidget(heading("Ajustes del volante"))
         form = QFormLayout()
@@ -741,7 +836,11 @@ class DevicePage(QWidget):
     def pedals_page(self) -> QWidget:
         page = QWidget()
         root = QVBoxLayout(page)
-        root.addWidget(self.picture("pedals_image", 240))
+        live = QHBoxLayout()
+        live.addWidget(self.picture("pedals_image", 240), 1)
+        self.live_pedals = PedalBars()
+        live.addWidget(self.live_pedals, 1)
+        root.addLayout(live)
         frame, lay = card()
         lay.addWidget(heading("Pedales"))
         form = QFormLayout()
@@ -757,9 +856,27 @@ class DevicePage(QWidget):
         root.addStretch(1)
         return page
 
+    def tick_live(self) -> None:
+        if not self.axes or not self.isVisible():
+            return
+        try:
+            values = self.axes.read()
+        except OSError:
+            self.axes = None
+            return
+        self.live_wheel.set_angle(values["wheel"] * self.wheel().get("range", 900) / 2)
+        self.live_pedals.set_values(values, self.wheel().get("combined", False))
+
+    def open_axes(self) -> None:
+        path = self.win.engine.axes_path(self.spec.id) if self.win.engine else None
+        if path:
+            self.axes = wheel_io.LiveAxes(path)
+
     def refresh_status(self, st: dict | None) -> None:
         if st is None:
             return
+        if self.spec.kind == "wheel" and not self.axes:
+            self.open_axes()
         bits = []
         if st["battery"]:
             bits.append(f"Batería {st['battery']}")

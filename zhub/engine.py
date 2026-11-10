@@ -76,7 +76,6 @@ class Session:
         self.paths = paths or []
         self.down: dict[str, dict] = {}
         self.gshift = False
-        self.fw_shift = False
         self.loops: dict[str, threading.Event] = {}
         self.levels: list[int] = []
         self.dpi = 0
@@ -117,9 +116,6 @@ class Session:
                 if ev.code not in self.spec.inputs:
                     out.key(ev.code, True)
                 return
-            if self.spec.firmware_gshift and ev.code == e.KEY_LEFTSHIFT:
-                self.fw_shift = bool(ev.value)
-                return
             button = self.spec.inputs.get(ev.code)
             if button:
                 self.on_button(button, bool(ev.value))
@@ -134,7 +130,7 @@ class Session:
         if pressed:
             if button in self.down:
                 return
-            action = self.binding(button, self.gshift or self.fw_shift)
+            action = self.binding(button, self.gshift)
             self.down[button] = action
             self.begin(button, action)
         else:
@@ -270,7 +266,9 @@ class Session:
 
     def write_dpi(self, value: int) -> None:
         self.dpi = value
-        if self.writable:
+        if self.g600:
+            self.queue_hw(self.set_g600_dpi, value)
+        elif self.writable:
             self.queue_hw(self.hid.set_dpi, value)
         self.engine.changed()
 
@@ -356,7 +354,14 @@ class Session:
 
     def apply_g600(self) -> None:
         if self.g600:
-            self.g600.apply(self.mouse_settings(), self.cfg().get("lighting") or {})
+            m = self.mouse_settings()
+            if self.g600.apply(m, self.cfg().get("lighting") or {}):
+                self.g600.select_mode(g600.SLOT_MODE)
+            self.set_g600_dpi(m["default"])
+
+    def set_g600_dpi(self, value: int) -> None:
+        """El nivel se cambia en memoria volátil; no escribe en el ratón."""
+        self.g600.set_level(g600.level_index(self.mouse_settings(), value))
 
     def note_firmware(self) -> None:
         reference = self.engine.fw_refs.get(self.spec.id, "")
@@ -364,7 +369,7 @@ class Session:
         self.engine.changed()
 
     def read_wheel_firmware(self) -> None:
-        self.firmware = wheel.read_firmware()
+        self.firmware = wheel.read_firmware(self.engine.fw_refs.get(self.spec.id, ""))
         self.note_firmware()
 
     @property
@@ -375,8 +380,10 @@ class Session:
         if not self.spec.hidpp:
             self.online = True
             if self.spec.id == "g600":
+                self.firmware = hidpp.usb_version(0xC24A)
                 try:
                     self.g600 = g600.G600.open()
+                    self.g600.activate()
                 except (OSError, g600.G600Error) as exc:
                     self.hid_error = f"ajustes del G600 no disponibles: {exc}"
             elif self.spec.kind == "wheel":
@@ -514,7 +521,10 @@ class Session:
             if self.transform:
                 self.transform.stop()
             if self.g600:
-                self.g600.close()
+                try:
+                    self.g600.close()
+                except OSError:
+                    pass
             self.engine.detached(self)
 
     def update_battery(self) -> None:
@@ -636,6 +646,11 @@ class Engine:
         target = ids[(idx + 1) % len(ids)]
         self.cycled = target["id"]
         self._apply(target)
+
+    def axes_path(self, device_id: str) -> str | None:
+        with self.lock:
+            session = self.sessions.get(device_id)
+        return session.ff_path() if session else None
 
     def status(self) -> list[dict]:
         with self.lock:

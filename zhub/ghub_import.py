@@ -21,6 +21,8 @@ _MEDIA = {
     "NEXT": "KEY_NEXTSONG", "VOLUME_UP": "KEY_VOLUMEUP", "VOLUME_DOWN": "KEY_VOLUMEDOWN", "MUTE": "KEY_MUTE",
 }
 # Identificadores internos deducidos de las asignaciones de fábrica de cada ratón.
+_MODIFIERS = ("KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_LEFTALT", "KEY_LEFTMETA",
+              "KEY_RIGHTCTRL", "KEY_RIGHTSHIFT", "KEY_RIGHTALT", "KEY_RIGHTMETA")
 _SPECIAL = {
     "0404": {"type": "dpi", "op": "cycle"},
     "0905": {"type": "gshift"},
@@ -134,7 +136,8 @@ def convert_card(card_id: str, cards: dict[str, dict]) -> dict | None:
     if kind == "01":
         code = hid_to_evdev(value)
         keys = [key_name(code)] if code else []
-        return {"type": "key", "keys": (["KEY_LEFTSHIFT"] if mods else []) + keys}
+        held = [name for bit, name in enumerate(_MODIFIERS) if mods & (1 << bit)]
+        return {"type": "key", "keys": held + keys}
     return _SPECIAL.get(tail[:4])
 
 

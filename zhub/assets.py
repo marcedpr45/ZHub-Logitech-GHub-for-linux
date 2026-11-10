@@ -39,7 +39,9 @@ def parse_firmware(text: str) -> tuple[int, ...] | None:
 
 def is_newer(available: str, installed: str) -> bool:
     a, b = parse_firmware(available), parse_firmware(installed)
-    return bool(a and b and a > b)
+    if not a or not b:
+        return False
+    return a[:2] > b[:2] if installed.count(".") < 2 else a > b  # sin compilación, solo mayor y menor
 
 
 def sync() -> None:

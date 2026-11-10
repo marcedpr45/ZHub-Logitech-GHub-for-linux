@@ -82,11 +82,24 @@ class Bindings(unittest.TestCase):
         s.on_button("g5", True); s.on_button("g5", False); time.sleep(0.03)
         n = len(eng.out.log); time.sleep(0.03); self.assertEqual(len(eng.out.log), n)
 
-    def test_g600_firmware_shift(self):
+    def test_g600_soft_buttons(self):
         eng, s = setup(spec=G600)
-        eng.profile["devices"]["g600"] = {"shifted": {"g9": {"type": "key", "keys": ["KEY_Z"]}}}
-        s.on_event(ev(e.EV_KEY, e.KEY_LEFTSHIFT, 1)); s.on_event(ev(e.EV_KEY, e.KEY_1, 1)); s.on_event(ev(e.EV_KEY, e.KEY_1, 0))
-        self.assertEqual(eng.out.log, [(e.KEY_Z, True), (e.KEY_Z, False)])
+        eng.profile["devices"]["g600"] = {"shifted": {"g9": {"type": "key", "keys": ["KEY_Z"]}}, "buttons": {"g8": {"type": "key", "keys": ["KEY_X"]}}}
+        s.on_event(ev(e.EV_KEY, e.KEY_F13, 1)); self.assertTrue(s.gshift)
+        s.on_event(ev(e.EV_KEY, e.KEY_1, 1)); s.on_event(ev(e.EV_KEY, e.KEY_1, 0))
+        s.on_event(ev(e.EV_KEY, e.KEY_F13, 0)); self.assertFalse(s.gshift)
+        s.on_event(ev(e.EV_KEY, e.KEY_F15, 1)); s.on_event(ev(e.EV_KEY, e.KEY_F15, 0))
+        self.assertEqual(eng.out.log, [(e.KEY_Z, True), (e.KEY_Z, False), (e.KEY_X, True), (e.KEY_X, False)])
+
+
+class LiveValues(unittest.TestCase):
+    def test_scale(self):
+        from types import SimpleNamespace as N
+        from zhub.wheel import LiveAxes
+        axes = LiveAxes.__new__(LiveAxes)
+        data = {e.ABS_X: N(value=65535, min=0, max=65535), e.ABS_Y: N(value=255, min=0, max=255), e.ABS_Z: N(value=0, min=0, max=255), e.ABS_RZ: N(value=51, min=0, max=255)}
+        axes.dev = N(absinfo=data.__getitem__)
+        self.assertEqual(axes.read(), {"wheel": 1.0, "throttle": 1.0, "brake": 0.0, "clutch": 0.2})
 
 
 class FakeHid:
@@ -160,20 +173,29 @@ class Presence(unittest.TestCase):
 
 class G600Report(unittest.TestCase):
     def base(self):
-        r = bytearray(154); r[0] = 0xF3; r[4] = 2; r[11] = 0; r[12] = 8; r[13] = 2; r[14:18] = bytes([8, 16, 32, 64])
+        r = bytearray(154); r[0] = 0xF5; r[4] = 2; r[5] = 5; r[12] = 8; r[13] = 2; r[14:18] = bytes([8, 16, 32, 64])
+        r[31 + 15:31 + 24] = bytes([0x17, 0, 0, 0x13, 0, 0, 0x14, 0, 0]); r[94 + 15:94 + 18] = bytes([0x17, 0, 0])
         return bytes(r)
 
-    def test_build(self):
+    def test_build_matches_real_layout(self):
         s = {"levels": [800, 1600], "default": 1600, "shift": 400, "report_rate": 500}
         o = g600.build(self.base(), s, {"effect": "fixed", "color": "#102030", "period": 3000})
         self.assertEqual(o[1:4], bytes([0x10, 0x20, 0x30])); self.assertEqual(o[4], 0); self.assertEqual(o[5], 3)
         self.assertEqual(o[11], 1); self.assertEqual(o[12], 8); self.assertEqual(o[13], 2)
-        self.assertEqual(o[14:18], bytes([16, 32, 0, 0])); self.assertEqual(len(o), 154)
+        self.assertEqual(o[14:19], bytes([16, 32, 8, 0, 0])); self.assertEqual(len(o), 154)
+        self.assertEqual(o[46:55], bytes([0, 0, 0x68, 0, 0, 0x69, 0, 0, 0x6A]))
+        self.assertEqual(o[109:112], bytes([0, 0, 0x68]))
 
-    def test_rejects_unknown_format(self):
+    def test_only_touches_its_slot_and_rejects_unknown(self):
+        other = bytearray(self.base()); other[0] = 0xF3
+        with self.assertRaises(g600.G600Error):
+            g600.validate(bytes(other))
         bad = bytearray(self.base()); bad[11] = 9
         with self.assertRaises(g600.G600Error):
             g600.build(bytes(bad), {"levels": [800], "default": 800, "shift": 400}, {})
+
+    def test_import_gshift_modifier_is_ctrl(self):
+        self.assertEqual(ghub_import.convert_card("0f82f693-5b78-4cf5-867e-011e01000000", {}), {"type": "key", "keys": ["KEY_LEFTCTRL", "KEY_1"]})
 
 
 class Firmware(unittest.TestCase):
@@ -183,6 +205,13 @@ class Firmware(unittest.TestCase):
         self.assertTrue(assets.is_newer("139.02.50", "U1 38.09.B0001"))
         self.assertFalse(assets.is_newer("139.02.50", "U1 39.02.B0050"))
         self.assertFalse(assets.is_newer("139.02.50", ""))
+        self.assertFalse(assets.is_newer("139.02.50", "139.02"))
+        self.assertTrue(assets.is_newer("139.03.10", "139.02"))
+
+    def test_usb_version_recovers_major(self):
+        self.assertEqual(wheel.full_version("39.02", "139.02.50"), "139.02")
+        self.assertEqual(wheel.full_version("38.09", "139.02.50"), "38.09")
+        self.assertEqual(wheel.full_version("39.02", ""), "39.02")
 
 
 class WheelMath(unittest.TestCase):

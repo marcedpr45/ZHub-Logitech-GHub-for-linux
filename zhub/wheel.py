@@ -52,25 +52,34 @@ def write_range(degrees: int) -> str:
     return ""
 
 
-def read_firmware() -> str:
-    """Versión del firmware del volante, probando cada interfaz HID."""
-    for node in glob.glob("/sys/class/hidraw/hidraw*"):
-        try:
-            with open(node + "/device/uevent") as f:
-                if ":0000C26E" not in f.read().upper():
-                    continue
-            hid = hidpp.HidppDevice("/dev/" + node.rsplit("/", 1)[-1], 0xFF)
-        except OSError:
-            continue
-        try:
-            version = hid.firmware()
-            if version:
-                return version
-        except (OSError, hidpp.HidppError):
-            pass
-        finally:
-            hid.close()
-    return ""
+def full_version(usb: str, reference: str) -> str:
+    """El USB solo guarda dos cifras del número principal: 139.02 se ve como 39.02."""
+    parts = reference.split(".")
+    if len(parts) >= 2 and usb == f"{int(parts[0]) % 100:02d}.{parts[1]}":
+        return f"{parts[0]}.{parts[1]}"
+    return usb
+
+
+def read_firmware(reference: str) -> str:
+    return full_version(hidpp.usb_version(0xC26E), reference)
+
+
+class LiveAxes:
+    """Posición física actual; no consume eventos y funciona aunque el volante esté capturado."""
+
+    PEDALS = {"throttle": e.ABS_Y, "brake": e.ABS_Z, "clutch": e.ABS_RZ}
+
+    def __init__(self, path: str):
+        self.dev = evdev.InputDevice(path)
+
+    def read(self) -> dict[str, float]:
+        """Volante de -1 a 1 (derecha positivo) y pedales de 0 a 1."""
+        x = self.dev.absinfo(e.ABS_X)
+        out = {"wheel": (2 * x.value - x.max - x.min) / (x.max - x.min)}
+        for name, code in self.PEDALS.items():
+            a = self.dev.absinfo(code)
+            out[name] = (a.value - a.min) / (a.max - a.min)
+        return out
 
 
 class WheelTransform(threading.Thread):
