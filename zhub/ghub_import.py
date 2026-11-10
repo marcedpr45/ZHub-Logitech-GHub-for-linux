@@ -7,8 +7,10 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import uuid
 from pathlib import Path
 
+from . import macros
 from .devices import CATALOG, hid_to_evdev, key_name
 from .profiles import new_profile
 
@@ -77,22 +79,44 @@ def _flat(seq) -> list[dict]:
     return _steps(seq or [])
 
 
-def convert_macro(m: dict, name: str = "") -> dict:
+def _components(seq) -> list[dict]:
+    """Pasos de una secuencia de G HUB, incluidos texto y programas."""
+    comps = seq.get("components", []) if isinstance(seq, dict) else (seq or [])
+    out: list[dict] = []
+    for c in comps:
+        if "textBlock" in c:
+            out.append({"text": c["textBlock"].get("text", "")})
+        elif "app" in c:
+            out.append({"run": c["app"].get("executablePath", "")})
+        else:
+            out.extend(_steps([c]))
+    return out
+
+
+def macro_definition(s: dict, macro_id: str, name: str) -> dict:
+    """Macro de biblioteca con el mismo tipo que en G HUB."""
+    m = macros.new_macro(name or "Macro")
+    m["id"] = macro_id
+    m["delay"] = int(s.get("defaultDelay", macros.DEFAULT_DELAY))
+    press, held, release = (_components(s.get(k)) for k in ("pressSequence", "heldSequence", "releaseSequence"))
+    if s.get("useSimpleActions", True):
+        m["steps"] = _components(s.get("simpleSequence"))
+    elif _components(s.get("toggleSequence")):
+        m.update(mode="toggle", steps=_components(s["toggleSequence"]))
+    elif held and not press and not release:
+        m.update(mode="repeat_hold", steps=held)
+    else:
+        m.update(mode="sequence", press=press, held=held, release=release)
+    return m
+
+
+def convert_macro(m: dict, name: str = "", card_id: str = "") -> dict:
     t = m.get("type")
     if t == "KEYSTROKE":
         return {"type": "key", "keys": _keys_from_keystroke(m["keystroke"])}
     if t == "SEQUENCE":
-        s = m["sequence"]
-        if s.get("useSimpleActions", True):
-            return {"type": "sequence", "name": name, "press": _flat(s.get("simpleSequence"))}
-        if _flat(s.get("toggleSequence")):
-            return {"type": "sequence", "name": name, "toggle": _flat(s["toggleSequence"])}
-        return {
-            "type": "sequence", "name": name,
-            "press": _flat(s.get("pressSequence")),
-            "held": _flat(s.get("heldSequence")),
-            "release": _flat(s.get("releaseSequence")),
-        }
+        macro_id = card_id or str(uuid.uuid4())
+        return {"type": "macro", "id": macro_id, "definition": macro_definition(m["sequence"], macro_id, name)}
     if t == "MOUSE":
         mo = m["mouse"]
         a = mo.get("action")
@@ -124,7 +148,7 @@ def convert_card(card_id: str, cards: dict[str, dict]) -> dict | None:
     """Traduce una tarjeta; None significa «sin asignar» (se usa la capa base)."""
     if card_id in cards and cards[card_id].get("macro"):
         c = cards[card_id]
-        return convert_macro(c["macro"], c.get("name", ""))
+        return convert_macro(c["macro"], c.get("name", ""), card_id)
     if card_id.replace("-", "").strip("f") == "":
         return {"type": "none"}
     if not card_id.startswith(_BUILTIN):
@@ -154,6 +178,9 @@ def convert(settings: dict) -> dict:
         match = {"exe": list(_EXES.get(app_name, [])) if gp.get("activeForApplication") else [],
                  "wm_class": [], "steam_appid": [], "title": ""}
         profile = new_profile(name, match, is_default)
+        for c in cards.values():  # en G HUB las macros pertenecen a la aplicación, estén asignadas o no
+            if c.get("applicationId") == gp["applicationId"] and (c.get("macro") or {}).get("type") == "SEQUENCE":
+                macros.library(profile).append(macro_definition(c["macro"]["sequence"], c["id"], c.get("name", "")))
         for a in gp["assignments"]:
             slot, card = a["slotId"], cards.get(a["cardId"], {})
             dev_id = slot.split("_")[0].split("-")[0]
@@ -186,6 +213,10 @@ def convert(settings: dict) -> dict:
                                    "period": params.get("periodInMs", 5000), "color": params.get("color", "#00b8fc")}
             elif (m := _SLOT.match(slot)) and m.group(2) in CATALOG[dev_id].buttons:
                 action = convert_card(a["cardId"], cards)
+                if action and "definition" in action:
+                    definition = action.pop("definition")
+                    if not macros.find(profile, definition["id"]):
+                        macros.library(profile).append(definition)
                 if action:
                     dev.setdefault("shifted" if m.group(3) else "buttons", {})[m.group(2)] = action
         profiles.append(profile)

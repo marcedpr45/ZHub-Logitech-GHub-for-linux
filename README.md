@@ -6,7 +6,7 @@ Perfiles por aplicación y configuración de periféricos Logitech en Linux, ins
 > El **G600** y el **G923 Xbox** se han probado **solo en parte** (ver la tabla) y todavía no dentro de un juego.
 > El **resto de periféricos Logitech no están verificados** y no aparecerán en ZHub.
 
-![Inicio con el G305, el G600 y el G923 conectados](docs/screenshots/inicio.png)
+![Inicio con el G305, el G600 y el G923 conectados](docs/screenshots/inicio-dispositivos.png)
 
 ## Compatibilidad
 
@@ -32,7 +32,10 @@ Si el radio de giro del G923 deja de aplicarse, el controlador puede tener su co
 - Cambio automático de perfil, perfil fijo y perfil por defecto.
 - Solo se muestran los dispositivos conectados, y detecta apagado y encendido.
 - Asignaciones sobre la imagen del dispositivo y capa G-Shift.
-- Macros (una vez, mantener, alternar) con grabación.
+- Macros por aplicación, como en G HUB: cada perfil tiene su biblioteca y cualquier botón puede usarlas.
+  - Los mismos cuatro tipos: sin repetición, repetir mientras se mantiene pulsado, alternar y secuencia (al pulsar, mientras se mantiene y al soltar).
+  - Grabación de teclado, retardos editables o retardo estándar entre acciones.
+  - Pasos de tecla, clic, texto (distribución US) y abrir programa.
 - Importación de perfiles, botones y macros desde una instalación de G HUB en una partición de Windows.
 - Alta de perfiles para los juegos de Steam instalados.
 - Volante y pedales del G923 en tiempo real.
@@ -70,6 +73,10 @@ Arranca ZHub desde el menú o con `zhub` (`--minimized` para ir a la bandeja, `-
 | ![Sensibilidad del G305](docs/screenshots/g305-sensibilidad.png) | ![Asignaciones del G305](docs/screenshots/g305-asignaciones.png) |
 
 ![Reglas de perfiles](docs/screenshots/perfiles.png)
+
+| Macros del perfil | Editor de macros |
+|---|---|
+| ![Biblioteca de macros del perfil](docs/screenshots/macros.png) | ![Editor de una macro de tipo secuencia](docs/screenshots/macro-editor.png) |
 
 | G600: asignaciones | G600: iluminación |
 |---|---|

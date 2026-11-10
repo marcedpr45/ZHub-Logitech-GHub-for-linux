@@ -4,7 +4,6 @@ from evdev import ecodes as e
 from zhub import assets, g600, hidpp, profiles, ghub_import, wheel
 from zhub.devices import G305, G600, hid_to_evdev, key_name
 from zhub.engine import Engine, Session
-from zhub.gui import steps_to_text, text_to_steps
 
 
 class FakeOut:
@@ -81,6 +80,60 @@ class Bindings(unittest.TestCase):
         s.on_button("g5", True); s.on_button("g5", False); time.sleep(0.03)
         s.on_button("g5", True); s.on_button("g5", False); time.sleep(0.03)
         n = len(eng.out.log); time.sleep(0.03); self.assertEqual(len(eng.out.log), n)
+
+    def lib(self, **kw):
+        from zhub import macros
+        m = macros.new_macro("t", kw.pop("mode"))
+        m.update(kw)
+        eng, s = setup({"buttons": {"g4": {"type": "macro", "id": m["id"]}}})
+        eng.profile["macros"] = [m]
+        return eng, s
+
+    def test_library_no_repeat_and_standard_delay(self):
+        steps = [{"key": "KEY_A", "down": True}, {"delay": 500}, {"key": "KEY_A", "down": False}]
+        eng, s = self.lib(mode="no_repeat", steps=steps, standard_delay=True, delay=1)
+        t = time.monotonic(); s.on_button("g4", True); s.on_button("g4", False); time.sleep(0.05)
+        self.assertLess(time.monotonic() - t, 0.4)  # el retardo grabado se sustituye por el estándar
+        self.assertEqual(eng.out.log, [(e.KEY_A, True), (e.KEY_A, False)])
+
+    def test_library_repeat_hold_stops_on_release(self):
+        eng, s = self.lib(mode="repeat_hold", steps=[{"key": "KEY_B", "tap": True}, {"delay": 2}])
+        s.on_button("g4", True); time.sleep(0.03); s.on_button("g4", False); time.sleep(0.02)
+        n = len(eng.out.log); self.assertGreater(n, 2); time.sleep(0.03); self.assertEqual(len(eng.out.log), n)
+
+    def test_library_toggle_needs_second_press(self):
+        eng, s = self.lib(mode="toggle", steps=[{"key": "KEY_C", "tap": True}, {"delay": 2}])
+        s.on_button("g4", True); s.on_button("g4", False); time.sleep(0.03)
+        n = len(eng.out.log); time.sleep(0.02); self.assertGreater(len(eng.out.log), n)
+        s.on_button("g4", True); s.on_button("g4", False); time.sleep(0.02)
+        n = len(eng.out.log); time.sleep(0.03); self.assertEqual(len(eng.out.log), n)
+
+    def test_library_sequence_phases(self):
+        eng, s = self.lib(mode="sequence", press=[{"key": "KEY_LEFTCTRL", "down": True}],
+                          held=[{"key": "KEY_D", "tap": True}, {"delay": 5}], release=[{"key": "KEY_LEFTCTRL", "down": False}])
+        s.on_button("g4", True); time.sleep(0.03); s.on_button("g4", False); time.sleep(0.03)
+        log = eng.out.log
+        self.assertEqual(log[0], (e.KEY_LEFTCTRL, True)); self.assertEqual(log[-1], (e.KEY_LEFTCTRL, False))
+        self.assertIn((e.KEY_D, True), log); self.assertEqual(s.loops, {})
+
+    def test_text_and_run_steps(self):
+        from zhub import macros
+        out, ran = FakeOut(), []
+        macros.Player(out, ran.append).run([{"text": "Hi!"}, {"run": "spectacle -r"}])
+        self.assertEqual(out.log, [(e.KEY_LEFTSHIFT, True), (e.KEY_H, True), (e.KEY_H, False), (e.KEY_LEFTSHIFT, False),
+                                   (e.KEY_I, True), (e.KEY_I, False),
+                                   (e.KEY_LEFTSHIFT, True), (e.KEY_1, True), (e.KEY_1, False), (e.KEY_LEFTSHIFT, False)])
+        self.assertEqual(ran, ["spectacle -r"])
+
+    def test_ghub_macro_modes(self):
+        seq = lambda *c: {"components": list(c)}
+        k = lambda u, d: {"keyboard": {"hidUsage": str(u), "isDown": d}}
+        held = ghub_import.macro_definition({"useSimpleActions": False, "heldSequence": seq(k(4, True), k(4, False)), "defaultDelay": 30}, "x", "Spam")
+        self.assertEqual((held["mode"], held["delay"], held["id"]), ("repeat_hold", 30, "x"))
+        tog = ghub_import.macro_definition({"useSimpleActions": False, "toggleSequence": seq(k(4, True))}, "y", "T")
+        self.assertEqual(tog["mode"], "toggle")
+        sq = ghub_import.macro_definition({"useSimpleActions": False, "pressSequence": seq(k(4, True)), "releaseSequence": seq(k(4, False))}, "z", "S")
+        self.assertEqual(sq["mode"], "sequence"); self.assertEqual(sq["release"], [{"key": "KEY_A", "down": False}])
 
     def test_g600_soft_buttons(self):
         eng, s = setup(spec=G600)
@@ -280,14 +333,6 @@ class SteamDetection(unittest.TestCase):
         win = profiles.window_info("", "", child.pid)
         child.kill(); child.wait()
         self.assertEqual(win.proton_exe, "Foo Bar.exe")
-
-
-class Macros(unittest.TestCase):
-    def test_roundtrip(self):
-        steps = [{"key": "KEY_A", "down": True}, {"delay": 5}, {"key": "KEY_A", "down": False}, {"key": "KEY_B", "tap": True}, {"mouse": 1, "down": True}]
-        self.assertEqual(text_to_steps(steps_to_text(steps)), steps)
-        with self.assertRaises(ValueError):
-            text_to_steps("baja KEY_NOEXISTE")
 
 
 if __name__ == "__main__":

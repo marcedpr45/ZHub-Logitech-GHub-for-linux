@@ -8,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QLibraryInfo, QLocale, QPointF, QRectF, Qt, QTimer, QTranslator, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QSystemTrayIcon, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import assets, ghub_import, wheel as wheel_io
+from . import assets, ghub_import, macros, wheel as wheel_io
 from .devices import CATALOG, DeviceSpec, key_name
 from .engine import Engine
 from .kwin import WindowBridge
@@ -63,24 +63,26 @@ QLabel:disabled { color: #5c616b; }
 """
 ACTION_TYPES = [
     ("default", "Por defecto"), ("none", "Desactivado"), ("mouse", "Botón de ratón"), ("key", "Tecla o atajo"),
-    ("sequence", "Macro"), ("wheel", "Rueda"), ("double_click", "Doble clic"), ("dpi", "DPI"),
+    ("macro", "Macro"), ("wheel", "Rueda"), ("double_click", "Doble clic"), ("dpi", "DPI"),
     ("gshift", "G-Shift"), ("profile_cycle", "Ciclo de perfil"), ("report_rate_cycle", "Ciclo de tasa de respuesta"),
     ("run", "Ejecutar programa"),
 ]
 _MOUSE = {1: "Izquierdo", 2: "Derecho", 3: "Central", 4: "Atrás", 5: "Adelante"}
 _WHEEL = {"up": "Arriba", "down": "Abajo", "left": "Izquierda", "right": "Derecha"}
 _DPI = {"cycle": "Ciclo", "up": "Subir", "down": "Bajar", "shift": "DPI Shift", "default": "Volver al predeterminado"}
-_MODES = {"press": "Una vez al pulsar", "held": "Repetir mientras se mantiene", "toggle": "Alternar (repetir hasta volver a pulsar)"}
 
 
 def pretty_key(name: str) -> str:
     return name.removeprefix("KEY_").removeprefix("BTN_").title()
 
 
-def describe(a: dict | None) -> str:
+def describe(a: dict | None, profile: dict | None = None) -> str:
     if a is None:
         return "Por defecto"
     t = a.get("type")
+    if t == "macro":
+        m = macros.find(profile or {}, a.get("id"))
+        return f"Macro: {m['name']}" if m else "Macro eliminada"
     if t == "mouse":
         return f"Clic {_MOUSE.get(a['button'], a['button']).lower()}"
     if t == "key":
@@ -96,41 +98,6 @@ def describe(a: dict | None) -> str:
     if t == "unsupported":
         return f"No portable: {a.get('label', '')}"
     return dict(ACTION_TYPES).get(t, str(t))
-
-
-def steps_to_text(steps: list[dict]) -> str:
-    lines = []
-    for s in steps or []:
-        if "delay" in s:
-            lines.append(f"espera {s['delay']}")
-        elif "key" in s:
-            lines.append(f"{'pulsa' if s.get('tap') else 'baja' if s.get('down', True) else 'sube'} {s['key']}")
-        elif "mouse" in s:
-            lines.append(f"{'baja' if s.get('down', True) else 'sube'} raton {s['mouse']}")
-    return "\n".join(lines)
-
-
-def text_to_steps(text: str) -> list[dict]:
-    """Convierte el texto del editor en pasos; lanza ValueError si una línea no es válida."""
-    steps: list[dict] = []
-    for n, raw in enumerate(text.splitlines(), 1):
-        parts = raw.split()
-        if not parts:
-            continue
-        try:
-            if parts[0] == "espera":
-                steps.append({"delay": int(parts[1])})
-            elif parts[0] in ("baja", "sube") and parts[1] == "raton":
-                steps.append({"mouse": int(parts[2]), "down": parts[0] == "baja"})
-            elif parts[0] in ("baja", "sube", "pulsa") and parts[1].startswith("KEY_"):
-                from evdev import ecodes
-                ecodes.ecodes[parts[1]]
-                steps.append({"key": parts[1], "tap": True} if parts[0] == "pulsa" else {"key": parts[1], "down": parts[0] == "baja"})
-            else:
-                raise ValueError
-        except (ValueError, IndexError, KeyError):
-            raise ValueError(f"Línea {n} no válida: «{raw}»") from None
-    return steps
 
 
 class KeyCapture(QLineEdit):
@@ -159,33 +126,237 @@ class KeyCapture(QLineEdit):
         self.fresh = True
 
 
-class MacroEditor(QPlainTextEdit):
-    """Editor de pasos con grabación de teclas y tiempos."""
+class StepEditor(QWidget):
+    """Pasos de una macro: se graban o se añaden a mano, como en el editor de G HUB."""
 
-    def __init__(self):
+    def __init__(self, steps: list[dict]):
         super().__init__()
+        self.steps = copy.deepcopy(steps)
         self.recording, self.last = False, 0
-        self.setPlaceholderText("baja KEY_LEFTCTRL\nespera 10\npulsa KEY_E\nsube KEY_LEFTCTRL")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        tools = QHBoxLayout()
+        self.record = QPushButton("● Grabar")
+        self.record.setCheckable(True)
+        self.record.toggled.connect(self.toggle_record)
+        tools.addWidget(self.record)
+        for label, fn in (("+ Tecla", self.add_key), ("+ Retardo", self.add_delay), ("+ Clic", self.add_click),
+                          ("+ Texto", self.add_text), ("+ Programa", self.add_program)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            tools.addWidget(b)
+        tools.addStretch(1)
+        lay.addLayout(tools)
+        self.list = QListWidget()
+        self.list.setObjectName("steps")
+        self.list.installEventFilter(self)
+        self.list.itemDoubleClicked.connect(self.edit_item)
+        lay.addWidget(self.list, 1)
+        order = QHBoxLayout()
+        for label, fn in (("Subir", lambda: self.move(-1)), ("Bajar", lambda: self.move(1)),
+                          ("Eliminar", self.remove), ("Vaciar", self.clear)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            order.addWidget(b)
+        order.addStretch(1)
+        hint = heading("Doble clic en un retardo, texto o programa para cambiarlo", "muted")
+        order.addWidget(hint)
+        lay.addLayout(order)
+        self.refresh()
 
-    def keyPressEvent(self, ev):
-        self._record(ev, "baja") if self.recording else super().keyPressEvent(ev)
+    def refresh(self, select: int | None = None) -> None:
+        self.list.clear()
+        for step in self.steps:
+            self.list.addItem(macros.describe_step(step))
+        if select is not None and self.steps:
+            self.list.setCurrentRow(min(max(select, 0), len(self.steps) - 1))
 
-    def keyReleaseEvent(self, ev):
-        self._record(ev, "sube") if self.recording else super().keyReleaseEvent(ev)
+    def insert(self, new: list[dict]) -> None:
+        row = self.list.currentRow()
+        at = row + 1 if row >= 0 else len(self.steps)
+        self.steps[at:at] = new
+        self.refresh(at + len(new) - 1)
 
-    def _record(self, ev, verb):
-        code = ev.nativeScanCode() - 8
-        if code <= 0 or ev.isAutoRepeat():
+    def toggle_record(self, on: bool) -> None:
+        self.recording, self.last = on, 0
+        self.record.setText("■ Detener" if on else "● Grabar")
+        if on:
+            self.list.setFocus()
+
+    def eventFilter(self, obj, ev):
+        if self.recording and ev.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            code = ev.nativeScanCode() - 8
+            if code > 0 and not ev.isAutoRepeat():
+                new = [{"delay": max(1, ev.timestamp() - self.last)}] if self.last else []
+                self.last = ev.timestamp()
+                new.append({"key": key_name(code), "down": ev.type() == QEvent.Type.KeyPress})
+                self.steps.extend(new)
+                self.refresh(len(self.steps) - 1)
+            return True
+        return super().eventFilter(obj, ev)
+
+    def add_key(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Añadir tecla o atajo")
+        lay = QVBoxLayout(dlg)
+        capture = KeyCapture([])
+        lay.addWidget(capture)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() and capture.keys:
+            self.insert([{"key": k, "down": True} for k in capture.keys] +
+                        [{"key": k, "down": False} for k in reversed(capture.keys)])
+
+    def add_delay(self) -> None:
+        ms, ok = QInputDialog.getInt(self, "Añadir retardo", "Milisegundos", macros.DEFAULT_DELAY, 1, 600000)
+        if ok:
+            self.insert([{"delay": ms}])
+
+    def add_click(self) -> None:
+        names = list(_MOUSE.values())
+        choice, ok = QInputDialog.getItem(self, "Añadir clic", "Botón", names, 0, False)
+        if ok:
+            button = list(_MOUSE)[names.index(choice)]
+            self.insert([{"mouse": button, "down": True}, {"mouse": button, "down": False}])
+
+    def ask_text(self, current: str = "") -> str | None:
+        text, ok = QInputDialog.getText(self, "Texto", "Texto que se escribirá", text=current)
+        if not ok or not text:
+            return None
+        if not macros.text_supported(text):
+            bad = "".join(sorted({c for c in text if c not in macros.CHARS}))
+            QMessageBox.warning(self, "Caracteres no admitidos",
+                                f"Solo se escriben caracteres de la distribución de teclado US. Se omitirán: {bad}")
+        return text
+
+    def add_text(self) -> None:
+        text = self.ask_text()
+        if text:
+            self.insert([{"text": text}])
+
+    def add_program(self) -> None:
+        cmd, ok = QInputDialog.getText(self, "Abrir programa", "Orden (por ejemplo: spectacle -r)")
+        if ok and cmd.strip():
+            self.insert([{"run": cmd.strip()}])
+
+    def edit_item(self, item) -> None:
+        row = self.list.row(item)
+        step = self.steps[row]
+        if "delay" in step:
+            ms, ok = QInputDialog.getInt(self, "Retardo", "Milisegundos", step["delay"], 1, 600000)
+            if ok:
+                step["delay"] = ms
+        elif "text" in step:
+            text = self.ask_text(step["text"])
+            if text:
+                step["text"] = text
+        elif "run" in step:
+            cmd, ok = QInputDialog.getText(self, "Abrir programa", "Orden", text=step["run"])
+            if ok and cmd.strip():
+                step["run"] = cmd.strip()
+        self.refresh(row)
+
+    def move(self, delta: int) -> None:
+        row = self.list.currentRow()
+        to = row + delta
+        if row < 0 or not 0 <= to < len(self.steps):
             return
-        if self.last:
-            self.appendPlainText(f"espera {max(1, ev.timestamp() - self.last)}")
-        self.last = ev.timestamp()
-        self.appendPlainText(f"{verb} {key_name(code)}")
+        self.steps[row], self.steps[to] = self.steps[to], self.steps[row]
+        self.refresh(to)
+
+    def remove(self) -> None:
+        row = self.list.currentRow()
+        if row >= 0:
+            del self.steps[row]
+            self.refresh(row)
+
+    def clear(self) -> None:
+        self.steps = []
+        self.refresh()
+
+
+class MacroDialog(QDialog):
+    """Crear o editar una macro con los tipos de G HUB."""
+
+    def __init__(self, parent, macro: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Macro")
+        self.setMinimumSize(720, 560)
+        self.macro = copy.deepcopy(macro)
+        root = QVBoxLayout(self)
+        self.name = QLineEdit(self.macro.get("name", ""))
+        self.name.setPlaceholderText("Nombre de la macro")
+        root.addWidget(self.name)
+        modes = QHBoxLayout()
+        self.mode_group = QButtonGroup(self)
+        for key, label in macros.MODES.items():
+            b = QPushButton(label)
+            b.setObjectName("segment")
+            b.setCheckable(True)
+            b.setChecked(key == self.macro["mode"])
+            b.clicked.connect(lambda _=False, k=key: self.set_mode(k))
+            self.mode_group.addButton(b)
+            modes.addWidget(b)
+        root.addLayout(modes)
+        self.help = heading("", "muted")
+        self.help.setWordWrap(True)
+        root.addWidget(self.help)
+        delay = QHBoxLayout()
+        self.standard = QCheckBox("Usar retardo estándar entre acciones (ignora los retardos grabados)")
+        self.standard.setChecked(self.macro.get("standard_delay", False))
+        self.delay = QSpinBox()
+        self.delay.setRange(1, 10000)
+        self.delay.setSuffix(" ms")
+        self.delay.setValue(self.macro.get("delay", macros.DEFAULT_DELAY))
+        self.delay.setEnabled(self.standard.isChecked())
+        self.standard.toggled.connect(self.delay.setEnabled)
+        delay.addWidget(self.standard)
+        delay.addWidget(self.delay)
+        delay.addStretch(1)
+        root.addLayout(delay)
+        self.single = StepEditor(self.macro.get("steps", []))
+        self.phases = QTabWidget()
+        self.phase_editors = {}
+        for key, label in macros.PHASES.items():
+            self.phase_editors[key] = StepEditor(self.macro.get(key, []))
+            self.phases.addTab(self.phase_editors[key], label)
+        self.editors = QStackedWidget()
+        self.editors.addWidget(self.single)
+        self.editors.addWidget(self.phases)
+        root.addWidget(self.editors, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.set_mode(self.macro["mode"])
+
+    def set_mode(self, mode: str) -> None:
+        if mode == "sequence" and self.macro["mode"] != "sequence":
+            empty = all(not ed.steps for ed in self.phase_editors.values())
+            if empty and self.single.steps:  # lleva los pasos a «Al pulsar» para no perderlos
+                self.phase_editors["press"].steps = copy.deepcopy(self.single.steps)
+                self.phase_editors["press"].refresh()
+        self.macro["mode"] = mode
+        self.help.setText(macros.MODE_HELP[mode])
+        self.editors.setCurrentIndex(1 if mode == "sequence" else 0)
+
+    def _accept(self) -> None:
+        name = self.name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Falta el nombre", "Ponle un nombre a la macro.")
+            return
+        self.macro.update(name=name, standard_delay=self.standard.isChecked(), delay=self.delay.value(),
+                          steps=self.single.steps, **{k: ed.steps for k, ed in self.phase_editors.items()})
+        self.accept()
 
 
 class ActionDialog(QDialog):
-    def __init__(self, parent, title: str, action: dict | None):
+    def __init__(self, parent, title: str, action: dict | None, profile: dict):
         super().__init__(parent)
+        self.profile = profile
+        self.library_changed = False
         self.setWindowTitle(title)
         self.setMinimumWidth(460)
         self.result_action = action
@@ -210,13 +381,13 @@ class ActionDialog(QDialog):
         self._page("dpi", self.dpi_op)
         self._page("key", self.capture)
         self._page("run", self.command)
-        self._page("sequence", self._macro_page(a))
+        self._page("macro", self._macro_page(a))
         blank = QWidget()
         self.pages.addWidget(blank)
         self.blank = self.pages.count() - 1
 
         self.kind.currentIndexChanged.connect(self._sync)
-        current = "default" if action is None else a.get("type")
+        current = "default" if action is None else "macro" if a.get("type") == "sequence" else a.get("type")
         idx = self.kind.findData(current)
         self.kind.setCurrentIndex(max(idx, 0))
         self._sync()
@@ -241,24 +412,51 @@ class ActionDialog(QDialog):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.macro_name = QLineEdit(a.get("name", ""))
-        self.macro_name.setPlaceholderText("Nombre de la macro")
-        mode = "toggle" if a.get("toggle") else "held" if a.get("held") else "press"
-        self.macro_mode = self._combo(_MODES, mode)
-        self.editor = MacroEditor()
-        self.editor.setPlainText(steps_to_text(a.get(mode, [])) if a.get("type") == "sequence" else "")
-        self.record = QPushButton("Grabar teclas")
-        self.record.setCheckable(True)
-        self.record.toggled.connect(self._toggle_record)
-        for w in (self.macro_name, self.macro_mode, self.editor, self.record):
-            lay.addWidget(w)
+        self.legacy = macros.from_legacy(a) if a.get("type") == "sequence" else None
+        self.macro_box = QComboBox()
+        row = QHBoxLayout()
+        for label, fn in (("Nueva macro…", self._new_macro), ("Editar…", self._edit_macro)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addWidget(self.macro_box)
+        lay.addLayout(row)
+        note = heading("Las macros son del perfil, como en G HUB: cada aplicación tiene las suyas.", "muted")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        self._fill_macros(self.legacy["id"] if self.legacy else a.get("id"))
         return page
 
-    def _toggle_record(self, on: bool) -> None:
-        self.editor.recording, self.editor.last = on, 0
-        self.record.setText("Detener grabación" if on else "Grabar teclas")
-        if on:
-            self.editor.setFocus()
+    def _choices(self) -> list[dict]:
+        return macros.library(self.profile) + ([self.legacy] if self.legacy else [])
+
+    def _fill_macros(self, select: str | None) -> None:
+        self.macro_box.clear()
+        for m in self._choices():
+            self.macro_box.addItem(f"{m['name']} · {macros.MODES[m['mode']]}", m["id"])
+        idx = self.macro_box.findData(select)
+        if idx >= 0:
+            self.macro_box.setCurrentIndex(idx)
+
+    def _new_macro(self) -> None:
+        dlg = MacroDialog(self, macros.new_macro(""))
+        if dlg.exec():
+            macros.library(self.profile).append(dlg.macro)
+            self.library_changed = True
+            self._fill_macros(dlg.macro["id"])
+
+    def _edit_macro(self) -> None:
+        mid = self.macro_box.currentData()
+        m = next((x for x in self._choices() if x["id"] == mid), None)
+        if not m:
+            return
+        dlg = MacroDialog(self, m)
+        if dlg.exec():
+            m.clear()
+            m.update(dlg.macro)
+            self.library_changed = True
+            self._fill_macros(mid)
 
     def _sync(self) -> None:
         self.pages.setCurrentIndex(self.page_index.get(self.kind.currentData(), self.blank))
@@ -282,13 +480,14 @@ class ActionDialog(QDialog):
             if not self.command.text().strip():
                 return
             self.result_action = {"type": t, "command": self.command.text().strip()}
-        elif t == "sequence":
-            try:
-                steps = text_to_steps(self.editor.toPlainText())
-            except ValueError as exc:
-                QMessageBox.warning(self, "Macro no válida", str(exc))
+        elif t == "macro":
+            mid = self.macro_box.currentData()
+            if not mid:
+                QMessageBox.warning(self, "Sin macro", "Crea o elige una macro.")
                 return
-            self.result_action = {"type": t, "name": self.macro_name.text().strip(), self.macro_mode.currentData(): steps}
+            if self.legacy and mid == self.legacy["id"]:  # la macro antigua pasa a la biblioteca del perfil
+                macros.library(self.profile).append(self.legacy)
+            self.result_action = {"type": "macro", "id": mid}
         else:
             self.result_action = {"type": t}
         self.accept()
@@ -528,6 +727,7 @@ class DevicePage(QWidget):
         if spec.kind == "mouse":
             self.section("Sensibilidad", self.sensor_page())
             self.section("Asignaciones", self.assign_page())
+            self.section("Macros", self.macros_page())
             if spec.has_lighting:
                 self.section("Iluminación", self.lighting_page())
         else:
@@ -707,7 +907,7 @@ class DevicePage(QWidget):
         if self.layer == "shifted" and bid not in self.cfg.get("shifted", {}):
             return "Igual que normal"
         action = self.cfg.get(self.layer, {}).get(bid) if self.layer == "shifted" else (self.cfg.get("buttons", {}).get(bid) or self.spec.defaults.get(bid))
-        return describe(action)
+        return describe(action, self.win.editing)
 
     def toggle_layer(self, on: bool) -> None:
         self.layer = "shifted" if on else "buttons"
@@ -722,8 +922,13 @@ class DevicePage(QWidget):
 
     def edit_binding(self, bid: str) -> None:
         layer = self.layer
-        dlg = ActionDialog(self, self.spec.buttons[bid], copy.deepcopy(self.cfg.get(layer, {}).get(bid)))
-        if not dlg.exec():
+        dlg = ActionDialog(self, self.spec.buttons[bid], copy.deepcopy(self.cfg.get(layer, {}).get(bid)), self.win.editing)
+        ok = dlg.exec()
+        if dlg.library_changed:
+            self.refresh_macros()
+        if not ok:
+            if dlg.library_changed:
+                self.win.commit()
             return
         action = dlg.result_action
         if bid == "g1" and layer == "buttons" and action and not self.keeps_left_click(action):
@@ -740,6 +945,93 @@ class DevicePage(QWidget):
     def keeps_left_click(self, replacement: dict) -> bool:
         left = {"type": "mouse", "button": 1}
         return replacement == left or any(a == left for b, a in self.cfg.get("buttons", {}).items() if b != "g1")
+
+    # ---- macros ----
+    def macros_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        frame, box = card()
+        box.addWidget(heading(f"Macros de «{self.win.editing['name']}»"))
+        note = heading("Como en G HUB, las macros pertenecen al perfil de cada aplicación y se pueden asignar a cualquier botón.", "muted")
+        note.setWordWrap(True)
+        box.addWidget(note)
+        self.macro_list = QListWidget()
+        self.macro_list.setMinimumHeight(300)
+        self.macro_list.itemDoubleClicked.connect(lambda _: self.edit_macro())
+        box.addWidget(self.macro_list)
+        row = QHBoxLayout()
+        for label, fn, primary in (("Crear macro", self.create_macro, True), ("Editar", self.edit_macro, False),
+                                   ("Duplicar", self.duplicate_macro, False), ("Eliminar", self.delete_macro, False)):
+            b = QPushButton(label)
+            if primary:
+                b.setObjectName("primary")
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        box.addLayout(row)
+        lay.addWidget(frame)
+        lay.addStretch(1)
+        self.refresh_macros()
+        return page
+
+    def refresh_macros(self) -> None:
+        if not hasattr(self, "macro_list"):
+            return
+        row = self.macro_list.currentRow()
+        self.macro_list.clear()
+        for m in macros.library(self.win.editing):
+            self.macro_list.addItem(f"{m['name']}  ·  {macros.MODES[m['mode']]}")
+        if self.macro_list.count():
+            self.macro_list.setCurrentRow(min(max(row, 0), self.macro_list.count() - 1))
+        self.render_buttons()
+
+    def selected_macro(self) -> dict | None:
+        lib, row = macros.library(self.win.editing), self.macro_list.currentRow()
+        return lib[row] if 0 <= row < len(lib) else None
+
+    def create_macro(self) -> None:
+        dlg = MacroDialog(self, macros.new_macro(""))
+        if dlg.exec():
+            macros.library(self.win.editing).append(dlg.macro)
+            self.refresh_macros()
+            self.macro_list.setCurrentRow(self.macro_list.count() - 1)
+            self.win.commit()
+
+    def edit_macro(self) -> None:
+        m = self.selected_macro()
+        if m:
+            dlg = MacroDialog(self, m)
+            if dlg.exec():
+                m.clear()
+                m.update(dlg.macro)
+                self.refresh_macros()
+                self.win.commit()
+
+    def duplicate_macro(self) -> None:
+        m = self.selected_macro()
+        if m:
+            twin = copy.deepcopy(m)
+            twin.update(id=macros.new_macro("")["id"], name=f"{m['name']} (copia)")
+            macros.library(self.win.editing).append(twin)
+            self.refresh_macros()
+            self.macro_list.setCurrentRow(self.macro_list.count() - 1)
+            self.win.commit()
+
+    def delete_macro(self) -> None:
+        m = self.selected_macro()
+        if not m:
+            return
+        if QMessageBox.question(self, "Eliminar macro", f"¿Eliminar «{m['name']}»? Los botones que la usan quedarán por defecto.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        macros.library(self.win.editing).remove(m)
+        for dev in self.win.editing.get("devices", {}).values():
+            for layer in ("buttons", "shifted"):
+                bucket = dev.get(layer, {})
+                for bid in [b for b, a in bucket.items() if a.get("type") == "macro" and a.get("id") == m["id"]]:
+                    del bucket[bid]
+        self.refresh_macros()
+        self.win.commit()
 
     # ---- iluminación ----
     def lighting(self) -> dict:
@@ -1318,6 +1610,9 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s")
 
     app = QApplication(sys.argv)
+    qt_text = QTranslator(app)  # botones estándar (Aceptar, Cancelar, Guardar) en el idioma del sistema
+    if qt_text.load(QLocale.system(), "qtbase", "_", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(qt_text)
     app.setApplicationName("ZHub")
     app.setDesktopFileName("zhub")
     app.setQuitOnLastWindowClosed(False)

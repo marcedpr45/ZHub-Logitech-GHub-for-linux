@@ -13,7 +13,7 @@ from typing import Callable
 import evdev
 from evdev import UInput, ecodes as e
 
-from . import g600, hidpp, wheel
+from . import g600, hidpp, macros, wheel
 from .assets import is_newer
 from .devices import CATALOG, MOUSE_BUTTONS, DeviceSpec, key_code
 from .profiles import WindowInfo, default_mouse_settings, resolve
@@ -153,8 +153,10 @@ class Session:
         elif kind == "double_click":
             for down in (True, False, True, False):
                 out.key(e.BTN_LEFT, down)
-        elif kind == "sequence":
-            self.start_macro(button, a)
+        elif kind in ("macro", "sequence"):
+            m = macros.resolve(self.engine.profile, a)
+            if m:
+                self.start_macro(button, m)
         elif kind == "gshift":
             self.gshift = True
         elif kind == "dpi":
@@ -178,72 +180,46 @@ class Session:
         elif kind == "dpi" and a["op"] == "shift" and self.saved_dpi is not None:
             self.write_dpi(self.saved_dpi)
             self.saved_dpi = None
-        elif kind == "sequence" and not a.get("toggle") and a.get("held") and button in self.loops:
-            self.loops[button].set()
+        elif kind in ("macro", "sequence") and button in self.loops:
+            m = macros.resolve(self.engine.profile, a)
+            if m and m.get("mode") in ("repeat_hold", "sequence"):
+                self.loops[button].set()
 
     # ---- macros ----
-    def run_steps(self, steps: list[dict], stop: threading.Event | None = None) -> None:
-        out = self.engine.out
-        held: set[int] = set()
-
-        def press(code: int, down: bool) -> None:
-            out.key(code, down)
-            (held.add if down else held.discard)(code)
-
-        for s in steps:
-            if stop is not None and stop.is_set():
-                break
-            if "delay" in s:
-                time.sleep(s["delay"] / 1000)
-            elif "key" in s:
-                code = key_code(s["key"])
-                if s.get("tap"):
-                    press(code, True)
-                    press(code, False)
-                else:
-                    press(code, s.get("down", True))
-            elif "mouse" in s:
-                press(e.ecodes[MOUSE_BUTTONS[s["mouse"]]], s.get("down", True))
-        if stop is not None and stop.is_set():
-            for code in held:
-                out.key(code, False)
-
-    def start_macro(self, button: str, a: dict) -> None:
-        if a.get("toggle"):
-            if button in self.loops:
-                self.loops.pop(button).set()
-                return
-            stop = threading.Event()
-            self.loops[button] = stop
-
-            def toggle():
-                while not stop.is_set():
-                    self.run_steps(a["toggle"], stop)
-                    time.sleep(0.001)
-
-            threading.Thread(target=toggle, daemon=True).start()
+    def start_macro(self, button: str, m: dict) -> None:
+        mode = m.get("mode", "no_repeat")
+        standard = m.get("delay", macros.DEFAULT_DELAY) if m.get("standard_delay") else None
+        player = macros.Player(self.engine.out)
+        play = lambda steps, stop=None: player.run(steps, stop, standard)  # noqa: E731
+        if mode == "toggle" and button in self.loops:
+            self.loops.pop(button).set()
             return
         if button in self.loops:
             return
         stop = threading.Event()
         self.loops[button] = stop
 
-        def phases():
-            try:
-                self.run_steps(a.get("press", []))
-                if a.get("held"):
-                    while not stop.is_set():
-                        self.run_steps(a["held"], stop)
-                        time.sleep(0.001)
-                    self.run_steps(a.get("release", []))
-                elif a.get("release"):
-                    while button in self.down:
-                        time.sleep(0.005)
-                    self.run_steps(a["release"])
-            finally:
-                self.loops.pop(button, None)
+        def loop(steps: list[dict]) -> None:
+            while steps and not stop.is_set():
+                play(steps, stop)
+                stop.wait(0.001)
 
-        threading.Thread(target=phases, daemon=True).start()
+        def run() -> None:
+            try:
+                if mode == "no_repeat":
+                    play(m.get("steps", []))
+                elif mode in ("repeat_hold", "toggle"):
+                    loop(m.get("steps", []))
+                else:
+                    play(m.get("press", []))
+                    loop(m.get("held", []))
+                    stop.wait()
+                    play(m.get("release", []))
+            finally:
+                if self.loops.get(button) is stop:
+                    del self.loops[button]
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ---- hardware ----
     def queue_hw(self, fn: Callable, *args) -> None:
@@ -386,7 +362,8 @@ class Session:
                 except (OSError, g600.G600Error) as exc:
                     self.hid_error = f"ajustes del G600 no disponibles: {exc}"
             elif self.spec.kind == "wheel":
-                self.queue_hw(self.read_wheel_firmware)
+                # Antes de aplicar ajustes: el volante no atiende una consulta HID++ mientras recibe órdenes de fuerza
+                self.read_wheel_firmware()
             return
         endpoint = hidpp.find_endpoint(self.spec.pids[0], self.spec.receivers)
         if not endpoint:
