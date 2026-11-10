@@ -58,6 +58,8 @@ QHeaderView::section { background: #17191d; border: 0; color: #8d939e; padding: 
 QTableWidget QLabel { background: transparent; }
 QSlider::groove:horizontal { height: 4px; background: #33373f; }
 QSlider::handle:horizontal { background: #00b8fc; width: 14px; margin: -6px 0; border-radius: 7px; }
+QSlider::handle:horizontal:disabled { background: #4a4f58; }
+QLabel:disabled { color: #5c616b; }
 """
 ACTION_TYPES = [
     ("default", "Por defecto"), ("none", "Desactivado"), ("mouse", "Botón de ratón"), ("key", "Tecla o atajo"),
@@ -532,6 +534,7 @@ class DevicePage(QWidget):
             self.section("Volante", self.wheel_page())
             self.section("Pedales", self.pedals_page())
             self.axes: wheel_io.LiveAxes | None = None
+            self.live_ticks, self.hw_range = 0, 900
             self.live_timer = QTimer(self)
             self.live_timer.timeout.connect(self.tick_live)
             self.live_timer.start(33)
@@ -790,7 +793,7 @@ class DevicePage(QWidget):
         return self.cfg.setdefault("wheel", {"range": 900, "autocenter": 20, "gain": 100, "damping": 10, "sensitivity": 50,
                                               "throttle": 50, "brake": 50, "clutch": 50, "combined": False})
 
-    def slider_row(self, form: QFormLayout, key: str, label: str, low: int, high: int, default: int) -> None:
+    def slider_row(self, form: QFormLayout, key: str, label: str, low: int, high: int, default: int) -> QSlider:
         row = QHBoxLayout()
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(low, high)
@@ -802,6 +805,7 @@ class DevicePage(QWidget):
         row.addWidget(slider, 1)
         row.addWidget(value)
         form.addRow(label, row)
+        return slider
 
     def save_wheel(self, key: str, value) -> None:
         self.wheel()[key] = value
@@ -824,7 +828,13 @@ class DevicePage(QWidget):
         lay.addWidget(heading("Ajustes del volante"))
         form = QFormLayout()
         self.slider_row(form, "range", "Radio de giro (°)", 180, 900, 900)
-        self.slider_row(form, "autocenter", "Autocentrado (%)", 0, 100, 20)
+        centering = QCheckBox("Activar autocentrado (desactívalo si el juego centra el volante por su cuenta)")
+        centering.setChecked(self.wheel().get("autocenter_on", True))
+        form.addRow(centering)
+        strength = self.slider_row(form, "autocenter", "Fuerza del autocentrado (%)", 0, 100, 20)
+        strength.setEnabled(centering.isChecked())
+        centering.toggled.connect(strength.setEnabled)
+        centering.toggled.connect(lambda on: self.save_wheel("autocenter_on", on))
         self.slider_row(form, "gain", "Fuerza de respuesta (%)", 0, 100, 100)
         self.slider_row(form, "damping", "Amortiguación (%)", 0, 100, 10)
         self.slider_row(form, "sensitivity", "Sensibilidad (50 = lineal)", 0, 100, 50)
@@ -864,7 +874,10 @@ class DevicePage(QWidget):
         except OSError:
             self.axes = None
             return
-        self.live_wheel.set_angle(values["wheel"] * self.wheel().get("range", 900) / 2)
+        if self.live_ticks % 30 == 0:  # el giro real, no el pedido, para que los grados cuadren
+            self.hw_range = wheel_io.current_range() or self.wheel().get("range", 900)
+        self.live_ticks += 1
+        self.live_wheel.set_angle(values["wheel"] * self.hw_range / 2)
         self.live_pedals.set_values(values, self.wheel().get("combined", False))
 
     def open_axes(self) -> None:

@@ -208,6 +208,11 @@ class Firmware(unittest.TestCase):
         self.assertFalse(assets.is_newer("139.02.50", "139.02"))
         self.assertTrue(assets.is_newer("139.03.10", "139.02"))
 
+    def test_autocenter_toggle(self):
+        self.assertEqual(wheel.autocenter_level({"autocenter": 100}), 0xFFFF)
+        self.assertEqual(wheel.autocenter_level({"autocenter": 100, "autocenter_on": False}), 0)
+        self.assertEqual(wheel.autocenter_level({}), int(20 * 0xFFFF / 100))
+
     def test_usb_version_recovers_major(self):
         self.assertEqual(wheel.full_version("39.02", "139.02.50"), "139.02")
         self.assertEqual(wheel.full_version("38.09", "139.02.50"), "38.09")

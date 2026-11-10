@@ -6,7 +6,7 @@ Perfiles por aplicación y configuración de periféricos Logitech en Linux, ins
 > El **G600** y el **G923 Xbox** se han probado **solo en parte** (ver la tabla) y todavía no dentro de un juego.
 > El **resto de periféricos Logitech no están verificados** y no aparecerán en ZHub.
 
-![Inicio con un G305 conectado](docs/screenshots/inicio.png)
+![Inicio con el G305, el G600 y el G923 conectados](docs/screenshots/inicio.png)
 
 ## Compatibilidad
 
@@ -14,7 +14,7 @@ Perfiles por aplicación y configuración de periféricos Logitech en Linux, ins
 |---|---|---|
 | G305 Lightspeed | **Probado** | DPI, DPI Shift, 125–1000 Hz, botones, G-Shift, batería, firmware |
 | G600 MMO | **Parcial** | Probados G6–G9 y G-Shift. Falta comprobar a simple vista DPI, tasa de respuesta y RGB. Usa el tercer modo de memoria del ratón; los dos de G HUB no se tocan |
-| G923 Xbox | **Parcial** | Probados la lectura en vivo de volante y pedales y los pedales combinados. Falta probar en juegos el radio de giro, autocentrado, fuerza, amortiguación y curvas |
+| G923 Xbox | **Parcial** | Probados el radio de giro, el firmware, la lectura en vivo de volante y pedales y los pedales combinados. Falta probar en juegos el autocentrado, la fuerza, la amortiguación y las curvas |
 | Otros Logitech | **No verificados** | No soportados |
 
 Probado en CachyOS con KDE Plasma 6 sobre Wayland. La detección de ventana activa usa KWin, así que otros escritorios no cambian de perfil automáticamente.
@@ -25,6 +25,8 @@ ZHub reconoce el perfil por ejecutable, por el `.exe` que corre bajo Proton, por
 
 Las curvas y los pedales combinados del G923 usan un volante virtual; algunos juegos con Proton podrían ignorarlo o ver dos volantes. Si no se usan esas opciones, el juego accede al volante real. Algunos antitrampas pueden rechazar macros o dispositivos virtuales.
 
+Si el radio de giro del G923 deja de aplicarse, el controlador puede tener su cola de órdenes atascada (`journalctl -k -b | grep -c "command queue"` da un número alto). Desconectar y volver a conectar el volante la vacía.
+
 ## Funciones
 
 - Cambio automático de perfil, perfil fijo y perfil por defecto.
@@ -34,6 +36,7 @@ Las curvas y los pedales combinados del G923 usan un volante virtual; algunos ju
 - Importación de perfiles, botones y macros desde una instalación de G HUB en una partición de Windows.
 - Alta de perfiles para los juegos de Steam instalados.
 - Volante y pedales del G923 en tiempo real.
+- Autocentrado activable por perfil, para juegos que centran el volante por su cuenta.
 - Aviso cuando el G HUB instalado trae un firmware más nuevo; la actualización se hace desde Windows.
 
 Las imágenes de los dispositivos no se incluyen en el proyecto: ZHub las lee de tu propia instalación de G HUB. Sin ella, muestra una lista de botones.
@@ -68,11 +71,13 @@ Arranca ZHub desde el menú o con `zhub` (`--minimized` para ir a la bandeja, `-
 
 ![Reglas de perfiles](docs/screenshots/perfiles.png)
 
-Vista previa de funciones **sin probar con hardware real**:
-
-| G600: iluminación | G923: volante |
+| G600: asignaciones | G600: iluminación |
 |---|---|
-| ![Iluminación del G600](docs/screenshots/g600-sin-probar.png) | ![Volante G923](docs/screenshots/g923-sin-probar.png) |
+| ![Asignaciones del G600 con G6, G7 y G8](docs/screenshots/g600-asignaciones.png) | ![Iluminación del G600](docs/screenshots/g600-iluminacion.png) |
+
+| G923: volante | G923: pedales |
+|---|---|
+| ![Volante G923 en tiempo real](docs/screenshots/g923-volante.png) | ![Pedales G923 en tiempo real](docs/screenshots/g923-pedales.png) |
 
 ## Desarrollo
 

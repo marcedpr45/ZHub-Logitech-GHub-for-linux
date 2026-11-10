@@ -6,7 +6,7 @@ import os
 import select
 import time
 
-SHORT, LONG = 0x10, 0x11
+SHORT, LONG, VERY_LONG = 0x10, 0x11, 0x12
 DEVICE_INFO = 0x0003
 ERR_BUSY = 8
 ADJUSTABLE_DPI = 0x2201
@@ -91,8 +91,9 @@ def parse_rate_flags(flags: int) -> list[int]:
 class HidppDevice:
     SWID = 0x0B
 
-    def __init__(self, path: str, devnum: int):
+    def __init__(self, path: str, devnum: int, long_only: bool = False):
         self.path, self.devnum = path, devnum
+        self.long_only = long_only  # el G923 no declara informes cortos
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
         self._features: dict[int, int] = {}
         self.link: bool | None = None  # último aviso de enlace del receptor sin consumir
@@ -136,7 +137,7 @@ class HidppDevice:
 
     def _request(self, index: int, fn: int, params: tuple[int, ...], timeout: float) -> bytes:
         func = (fn << 4) | self.SWID
-        short = len(params) <= 3
+        short = len(params) <= 3 and not self.long_only
         size, rid = (7, SHORT) if short else (20, LONG)
         msg = bytes([rid, self.devnum, index, func, *params]).ljust(size, b"\0")
         self.poll()
@@ -147,7 +148,7 @@ class HidppDevice:
                 break
             r = os.read(self.fd, 64)
             self._note(r)
-            if len(r) < 5 or r[0] not in (SHORT, LONG) or r[1] != self.devnum:
+            if len(r) < 5 or r[0] not in (SHORT, LONG, VERY_LONG) or r[1] != self.devnum:
                 continue
             if r[2] == 0xFF and r[3] == index and r[4] == func:
                 raise HidppError(f"error HID++ {r[5]:#x} en índice {index:#x}", r[5])

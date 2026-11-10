@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import os
 import selectors
 import threading
 
@@ -36,12 +37,30 @@ def combine(throttle: int, brake: int, low: int, high: int) -> int:
     return round(low + span / 2 + ((throttle - low) - (brake - low)) * span / (2 * span))
 
 
+def autocenter_level(w: dict) -> int:
+    """Fuerza del resorte para FF_AUTOCENTER; 0 deja el centrado en manos del juego."""
+    return int(w.get("autocenter", 20) * 0xFFFF / 100) if w.get("autocenter_on", True) else 0
+
+
 def needs_transform(w: dict) -> bool:
     return bool(w.get("combined")) or any(w.get(k, 50) != 50 for k in ("sensitivity", "throttle", "brake", "clutch"))
 
 
+def current_range() -> int | None:
+    """Giro que el controlador confirma; no cambia hasta que el volante acepta la orden."""
+    for attr in glob.glob("/sys/bus/hid/devices/*046D:C26E*/range"):
+        try:
+            with open(attr) as f:
+                return int(f.read())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def write_range(degrees: int) -> str:
-    """Devuelve el error en texto, o cadena vacía si se aplicó."""
+    """Devuelve el error en texto, o cadena vacía si se aplicó o ya estaba."""
+    if current_range() == degrees:
+        return ""
     for attr in glob.glob("/sys/bus/hid/devices/*046D:C26E*/range"):
         try:
             with open(attr, "w") as f:
@@ -61,6 +80,27 @@ def full_version(usb: str, reference: str) -> str:
 
 
 def read_firmware(reference: str) -> str:
+    """Firmware exacto por HID++ y, si el volante no contesta, el que declara por USB."""
+    for node in glob.glob("/sys/class/hidraw/hidraw*"):
+        try:
+            with open(node + "/device/uevent") as f:
+                if ":0000C26E" not in f.read().upper():
+                    continue
+            with open(node + "/device/report_descriptor", "rb") as f:
+                desc = f.read()
+            if b"\x85\x11" not in desc:
+                continue
+            hid = hidpp.HidppDevice("/dev/" + os.path.basename(node), 0xFF, long_only=b"\x85\x10" not in desc)
+        except OSError:
+            continue
+        try:
+            version = hid.firmware()
+            if version:
+                return version
+        except (OSError, hidpp.HidppError):
+            pass
+        finally:
+            hid.close()
     return full_version(hidpp.usb_version(0xC26E), reference)
 
 

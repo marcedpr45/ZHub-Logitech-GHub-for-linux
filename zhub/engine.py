@@ -339,8 +339,7 @@ class Session:
         try:
             if self.ff_dev is None:
                 self.ff_dev = evdev.InputDevice(path)
-            if "autocenter" in w:
-                self.ff_dev.write(e.EV_FF, e.FF_AUTOCENTER, int(w["autocenter"] * 0xFFFF / 100))
+            self.ff_dev.write(e.EV_FF, e.FF_AUTOCENTER, wheel.autocenter_level(w))
             if "gain" in w:
                 self.ff_dev.write(e.EV_FF, e.FF_GAIN, int(w["gain"] * 0xFFFF / 100))
             if self.damper_id is not None:
