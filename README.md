@@ -40,6 +40,8 @@ Si el radio de giro del G923 deja de aplicarse, el controlador puede tener su co
 - Alta de perfiles para los juegos de Steam instalados.
 - Volante y pedales del G923 en tiempo real.
 - Autocentrado activable por perfil, para juegos que centran el volante por su cuenta.
+- Por perfil, el giro y la fuerza del G923 los controla ZHub o el juego. Con ZHub, el giro se vuelve a aplicar aunque un juego con Proton lo cambie al arrancar.
+- Como en G HUB, al abrir ZHub se mantiene el perfil del juego y la ventana muestra el perfil activo.
 - Aviso cuando el G HUB instalado trae un firmware más nuevo; la actualización se hace desde Windows.
 
 Las imágenes de los dispositivos no se incluyen en el proyecto: ZHub las lee de tu propia instalación de G HUB. Sin ella, muestra una lista de botones.

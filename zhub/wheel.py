@@ -42,6 +42,20 @@ def autocenter_level(w: dict) -> int:
     return int(w.get("autocenter", 20) * 0xFFFF / 100) if w.get("autocenter_on", True) else 0
 
 
+# Con "el juego controla" ZHub deja el volante neutro: giro completo, fuerza al
+# máximo y sin resortes ni amortiguación propios, para que el juego ponga los suyos.
+GAME_CONTROL = {"range": 900, "autocenter_on": False, "gain": 100, "damping": 0}
+
+
+def game_controls(w: dict) -> bool:
+    return w.get("control") == "game"
+
+
+def force_settings(w: dict) -> dict:
+    """Ajustes de fuerza y giro que ZHub aplica; las curvas de ejes no cambian."""
+    return {**w, **GAME_CONTROL} if game_controls(w) else w
+
+
 def needs_transform(w: dict) -> bool:
     return bool(w.get("combined")) or any(w.get(k, 50) != 50 for k in ("sensitivity", "throttle", "brake", "clutch"))
 
@@ -57,9 +71,13 @@ def current_range() -> int | None:
     return None
 
 
-def write_range(degrees: int) -> str:
-    """Devuelve el error en texto, o cadena vacía si se aplicó o ya estaba."""
-    if current_range() == degrees:
+def write_range(degrees: int, force: bool = False) -> str:
+    """Devuelve el error en texto, o cadena vacía si se aplicó o ya estaba.
+
+    Con `force` se escribe aunque el controlador crea que ya está: un juego con
+    Proton puede cambiar el giro por hidraw sin que el controlador se entere.
+    """
+    if not force and current_range() == degrees:
         return ""
     for attr in glob.glob("/sys/bus/hid/devices/*046D:C26E*/range"):
         try:

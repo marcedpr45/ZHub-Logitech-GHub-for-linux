@@ -1118,19 +1118,51 @@ class DevicePage(QWidget):
         root.addWidget(self.live_wheel)
         frame, lay = card()
         lay.addWidget(heading("Ajustes del volante"))
+        control = QHBoxLayout()
+        control.addWidget(QLabel("Quién controla el giro y la fuerza:"))
+        group = QButtonGroup(page)
+        for key, label in (("zhub", "ZHub"), ("game", "El juego")):
+            b = QPushButton(label)
+            b.setObjectName("segment")
+            b.setCheckable(True)
+            b.setChecked(self.wheel().get("control", "zhub") == key)
+            b.clicked.connect(lambda _=False, k=key: set_control(k))
+            group.addButton(b)
+            control.addWidget(b)
+        control.addStretch(1)
+        lay.addLayout(control)
+        control_help = heading("", "muted")
+        control_help.setWordWrap(True)
+        lay.addWidget(control_help)
         form = QFormLayout()
-        self.slider_row(form, "range", "Radio de giro (°)", 180, 900, 900)
+        managed = [self.slider_row(form, "range", "Radio de giro (°)", 180, 900, 900)]
         centering = QCheckBox("Activar autocentrado (desactívalo si el juego centra el volante por su cuenta)")
         centering.setChecked(self.wheel().get("autocenter_on", True))
         form.addRow(centering)
         strength = self.slider_row(form, "autocenter", "Fuerza del autocentrado (%)", 0, 100, 20)
-        strength.setEnabled(centering.isChecked())
-        centering.toggled.connect(strength.setEnabled)
+        centering.toggled.connect(lambda on: strength.setEnabled(on and not wheel_io.game_controls(self.wheel())))
         centering.toggled.connect(lambda on: self.save_wheel("autocenter_on", on))
-        self.slider_row(form, "gain", "Fuerza de respuesta (%)", 0, 100, 100)
-        self.slider_row(form, "damping", "Amortiguación (%)", 0, 100, 10)
+        managed += [centering, self.slider_row(form, "gain", "Fuerza de respuesta (%)", 0, 100, 100),
+                    self.slider_row(form, "damping", "Amortiguación (%)", 0, 100, 10)]
         self.slider_row(form, "sensitivity", "Sensibilidad (50 = lineal)", 0, 100, 50)
         lay.addLayout(form)
+
+        def show_control() -> None:
+            game = wheel_io.game_controls(self.wheel())
+            for widget in managed:
+                widget.setEnabled(not game)
+            strength.setEnabled(not game and centering.isChecked())
+            control_help.setText(
+                "El juego decide el giro, el autocentrado y la fuerza. ZHub deja el volante a 900° y sin "
+                "resortes propios, y no lo vuelve a tocar. La sensibilidad y los pedales siguen aplicándose."
+                if game else
+                "ZHub aplica estos ajustes al entrar en el perfil y los vuelve a poner si el juego los cambia al arrancar.")
+
+        def set_control(key: str) -> None:
+            self.save_wheel("control", key)
+            show_control()
+
+        show_control()
         root.addWidget(frame)
         root.addStretch(1)
         return page
@@ -1243,6 +1275,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.cfg, self.engine = cfg, engine
         self.editing = default_profile(cfg)
+        self.followed: str | None = None  # último perfil activo que siguió el selector
         self.tray: QSystemTrayIcon | None = None
         self.notified: set[tuple[str, str]] = set()
         self.shown: list[str] = []
@@ -1328,9 +1361,10 @@ class MainWindow(QMainWindow):
     def go_home(self) -> None:
         self.pages.setCurrentIndex(0)
 
-    def open_device(self, sid: str) -> None:
+    def open_device(self, sid: str, section: int = 0) -> None:
         self.close_device()
         self.page = DevicePage(self, CATALOG[sid])
+        self.page.rail.setCurrentRow(section)
         self.device_holder.addWidget(self.page)
         self.device_holder.setCurrentWidget(self.page)
         self.pages.setCurrentIndex(1)
@@ -1439,7 +1473,17 @@ class MainWindow(QMainWindow):
         self.sync_pin()
         self.show_rules(idx)
         if self.page:
-            self.open_device(self.page.spec.id)
+            self.open_device(self.page.spec.id, self.page.rail.currentRow())
+
+    def follow_active(self) -> None:
+        """Como G HUB: al cambiar el perfil activo, la ventana pasa a mostrarlo."""
+        active = self.engine.profile
+        if active["id"] == self.followed or QApplication.activeModalWidget():
+            return  # con un diálogo abierto se espera a que se cierre
+        self.followed = active["id"]
+        if active["id"] != self.editing["id"] and profile_by_id(self.cfg, active["id"]):
+            self.editing = profile_by_id(self.cfg, active["id"])
+            self.reload_profiles()
 
     def sync_pin(self) -> None:
         self.pin.blockSignals(True)
@@ -1461,6 +1505,8 @@ class MainWindow(QMainWindow):
             self.engine.set_window(self.engine.window)
 
     def refresh_live(self) -> None:
+        if self.engine:
+            self.follow_active()
         if self.connected_ids() != self.shown:
             self.rebuild_home()
         status = {s["id"]: s for s in self.engine.status()} if self.engine else {}

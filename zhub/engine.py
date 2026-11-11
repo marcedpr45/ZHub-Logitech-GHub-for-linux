@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import selectors
 import shlex
@@ -23,6 +24,7 @@ VIRTUAL_PREFIX = "ZHub"
 LOGITECH = 0x046D
 _BTN_RANGE = range(0x110, 0x118)
 PROBE_SECONDS = 20
+RANGE_REASSERT = (3, 7)  # esperas sucesivas: se reescribe a los 3 s y a los 10 s del cambio
 
 
 class Output:
@@ -91,6 +93,8 @@ class Session:
         self.transform: wheel.WheelTransform | None = None
         self.ff_dev: evdev.InputDevice | None = None
         self.damper_id: int | None = None
+        self.range_for: str | None = None  # perfil cuyo giro se escribió por última vez
+        self.range_wake = threading.Event()
         self.fails = 0
         self.firmware = ""
         self.last_input = 0.0
@@ -298,11 +302,24 @@ class Session:
         return None
 
     def apply_wheel(self) -> None:
-        w = self.cfg().get("wheel")
+        raw = self.cfg().get("wheel")
         path = self.ff_path()
-        if not w or not path:
+        if not raw or not path:
             return
-        self.hid_error = wheel.write_range(w["range"]) if "range" in w else ""
+        game = wheel.game_controls(raw)
+        w = wheel.force_settings(raw)
+        self.hid_error = ""
+        if "range" in w:
+            profile_id = self.engine.profile["id"]
+            # Si manda el juego, no se fuerza ni se reafirma: así no se pisa el giro
+            # que el juego haya puesto al volver a él con Alt+Tab.
+            fresh = profile_id != self.range_for and not game
+            self.range_for = profile_id
+            if game:
+                self.range_wake.set()
+            self.hid_error = wheel.write_range(w["range"], force=fresh)
+            if fresh:
+                self.reassert_range(profile_id, w["range"])
         want = wheel.needs_transform(w)
         if want and not self.transform:
             self.transform = wheel.WheelTransform(path, w)
@@ -326,6 +343,19 @@ class Session:
                 self.ff_dev.write(e.EV_FF, self.damper_id, 1)
         except OSError as exc:
             self.hid_error = str(exc)
+
+    def reassert_range(self, profile_id: str, degrees: int) -> None:
+        """Vuelve a escribir el giro mientras el juego recién enfocado inicializa el volante."""
+        self.range_wake.set()  # cancela la espera del cambio de perfil anterior
+        wake = self.range_wake = threading.Event()
+
+        def run() -> None:
+            for delay in RANGE_REASSERT:
+                if wake.wait(delay) or self.stop.is_set() or self.engine.profile["id"] != profile_id:
+                    return
+                wheel.write_range(degrees, force=True)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def apply_g600(self) -> None:
         if self.g600:
@@ -592,6 +622,8 @@ class Engine:
 
     # ---- perfiles ----
     def set_window(self, win: WindowInfo | None) -> None:
+        if win is not None and win.pid == os.getpid():
+            return  # como G HUB: al abrir ZHub se mantiene el perfil del juego
         self.window = win
         self.cycled = None
         self._apply(resolve(self.cfg, win))

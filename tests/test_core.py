@@ -272,6 +272,77 @@ class Firmware(unittest.TestCase):
         self.assertEqual(wheel.full_version("39.02", ""), "39.02")
 
 
+class WheelRange(unittest.TestCase):
+    def test_profile_change_rewrites_stale_range(self):
+        """Proton puede cambiar el giro por hidraw: el valor del controlador no es fiable."""
+        from zhub import engine as engine_mod
+        from zhub.devices import G923
+        cfg = profiles.default_config()
+        game = profiles.new_profile("FlatOut 2", {"exe": [], "wm_class": [], "steam_appid": ["2990"], "title": ""})
+        cfg["profiles"].append(game)
+        cfg["profiles"][0]["devices"]["g923"] = {"wheel": {"range": 900}}
+        game["devices"]["g923"] = {"wheel": {"range": 541}}
+        eng = Engine(cfg, FakeOut())
+        s = Session(eng, G923)
+        writes = []
+        old = (wheel.write_range, Session.ff_path, engine_mod.RANGE_REASSERT)
+        wheel.write_range = lambda d, force=False: writes.append((d, force)) or ""
+        Session.ff_path = lambda self: "/nonexistent"
+        engine_mod.RANGE_REASSERT = (0.05,)
+        try:
+            eng.sessions["g923"] = s
+            eng.set_window(profiles.WindowInfo("steam_app_2990", "FlatOut 2"))
+            self.assertEqual(writes[0], (541, True))
+            time.sleep(0.2)
+            self.assertEqual(writes[1], (541, True))  # se reafirma tras iniciar el juego
+            eng.set_config(cfg)  # mismo perfil: no hace falta forzar
+            self.assertEqual(writes[-1], (541, False))
+        finally:
+            wheel.write_range, Session.ff_path, engine_mod.RANGE_REASSERT = old
+            s.stop.set()
+
+
+    def test_game_control_leaves_wheel_neutral(self):
+        from zhub import engine as engine_mod
+        from zhub.devices import G923
+        cfg = profiles.default_config()
+        game = profiles.new_profile("AC", {"exe": [], "wm_class": [], "steam_appid": ["244210"], "title": ""})
+        cfg["profiles"].append(game)
+        game["devices"]["g923"] = {"wheel": {"range": 540, "autocenter_on": True, "autocenter": 80,
+                                             "damping": 30, "gain": 60, "control": "game"}}
+        eng = Engine(cfg, FakeOut())
+        s = Session(eng, G923)
+        writes = []
+        old = (wheel.write_range, Session.ff_path, engine_mod.RANGE_REASSERT)
+        wheel.write_range = lambda d, force=False: writes.append((d, force)) or ""
+        Session.ff_path = lambda self: "/nonexistent"
+        engine_mod.RANGE_REASSERT = (0.05,)
+        try:
+            eng.sessions["g923"] = s
+            eng.set_window(profiles.WindowInfo("steam_app_244210", "AC"))
+            time.sleep(0.2)
+            self.assertEqual(writes, [(900, False)])  # sin forzar ni reafirmar
+            w = wheel.force_settings(game["devices"]["g923"]["wheel"])
+            self.assertEqual(wheel.autocenter_level(w), 0)
+            self.assertEqual((w["gain"], w["damping"]), (100, 0))
+        finally:
+            wheel.write_range, Session.ff_path, engine_mod.RANGE_REASSERT = old
+            s.stop.set()
+
+
+class OwnWindow(unittest.TestCase):
+    def test_focusing_zhub_keeps_game_profile(self):
+        cfg = profiles.default_config()
+        game = profiles.new_profile("FlatOut 2", {"exe": [], "wm_class": [], "steam_appid": ["2990"], "title": ""})
+        cfg["profiles"].append(game)
+        eng = Engine(cfg, FakeOut())
+        eng.set_window(profiles.WindowInfo("steam_app_2990", "FlatOut 2", 1))
+        eng.set_window(profiles.WindowInfo("zhub", "ZHub", os.getpid()))
+        self.assertEqual(eng.profile["name"], "FlatOut 2")
+        eng.set_window(profiles.WindowInfo("org.kde.dolphin", "Dolphin", 2))
+        self.assertEqual(eng.profile["name"], "Escritorio")
+
+
 class WheelMath(unittest.TestCase):
     def test_curve(self):
         self.assertEqual(wheel.apply_curve(500, 0, 1000, 50), 500)
