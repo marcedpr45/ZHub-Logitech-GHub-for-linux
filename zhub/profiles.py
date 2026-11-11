@@ -23,14 +23,21 @@ class WindowInfo:
     exe: str = ""
     proton_exe: str = ""
     steam_appid: str = ""
+    cwd: str = ""  # carpeta de trabajo: bajo Proton/Wine es la del juego
+    exe_path: str = ""
 
 
 def window_info(wm_class: str, title: str, pid: int) -> WindowInfo:
     """Completa la ventana con el ejecutable real y el .exe si corre bajo Proton/Wine."""
-    exe, proton, steam = "", "", ""
+    exe, proton, steam, cwd, exe_path = "", "", "", "", ""
     if pid > 0:
         try:
-            exe = os.path.basename(os.readlink(f"/proc/{pid}/exe"))
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            pass
+        try:
+            exe_path = os.readlink(f"/proc/{pid}/exe")
+            exe = os.path.basename(exe_path)
             with open(f"/proc/{pid}/cmdline", "rb") as f:
                 for arg in f.read().split(b"\0"):
                     text = arg.decode(errors="replace").replace("\\", "/")
@@ -41,7 +48,7 @@ def window_info(wm_class: str, title: str, pid: int) -> WindowInfo:
             steam = (env.get(b"STEAM_COMPAT_APP_ID") or env.get(b"SteamAppId") or b"").decode()
         except OSError:
             pass
-    return WindowInfo(wm_class, title, pid, exe, proton, "" if steam == "0" else steam)
+    return WindowInfo(wm_class, title, pid, exe, proton, "" if steam == "0" else steam, cwd, exe_path)
 
 
 def new_profile(name: str, match: dict | None = None, is_default: bool = False) -> dict:
@@ -49,7 +56,7 @@ def new_profile(name: str, match: dict | None = None, is_default: bool = False) 
         "id": str(uuid.uuid4()),
         "name": name,
         "default": is_default,
-        "match": match or {"exe": [], "wm_class": [], "steam_appid": [], "title": ""},
+        "match": match or {"exe": [], "wm_class": [], "steam_appid": [], "title": "", "path": []},
         "devices": {},
     }
 
@@ -93,6 +100,10 @@ def matches(profile: dict, win: WindowInfo) -> bool:
     ids = {win.steam_appid, from_class.group(1) if from_class else ""} - {""}
     if ids & {str(a) for a in m.get("steam_appid", [])}:
         return True
+    for folder in m.get("path", []):
+        folder = os.path.normpath(os.path.expanduser(folder))
+        if folder.count("/") >= 2 and any(p == folder or p.startswith(folder + "/") for p in (win.cwd, win.exe_path) if p):
+            return True
     title = m.get("title")
     if title:
         try:

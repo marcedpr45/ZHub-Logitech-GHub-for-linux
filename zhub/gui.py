@@ -17,13 +17,13 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QSystemTrayIcon, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import assets, ghub_import, macros, wheel as wheel_io
+from . import apps, assets, ghub_import, macros, wheel as wheel_io
 from .devices import CATALOG, DeviceSpec, key_name
 from .engine import Engine
 from .kwin import WindowBridge
 from .profiles import (
     default_mouse_settings, default_profile, device_cfg, load_config, new_profile, profile_by_id, save_config,
-    scan_steam_games, window_info,
+    window_info,
 )
 
 AUTOSTART = Path.home() / ".config/autostart/zhub.desktop"
@@ -1268,6 +1268,93 @@ class DeviceCard(QFrame):
         self.status.setText(text + ("  ·  Firmware disponible" if st["update"] else ""))
 
 
+class AddProfilesDialog(QDialog):
+    """Elige apps y juegos instalados (Steam, Heroic, Lutris, menú) para crearles perfil."""
+
+    FILTERS = ("Todo", "Juegos", "Aplicaciones", *apps.GAME_SOURCES)
+
+    def __init__(self, parent, cfg: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Añadir perfiles")
+        self.resize(640, 620)
+        self.entries = apps.scan_all()
+        root = QVBoxLayout(self)
+        note = heading("Marca las apps y juegos para los que quieres un perfil. Los juegos de Heroic y Lutris "
+                       "se reconocen por su carpeta de instalación; las aplicaciones, por su ventana.", "muted")
+        note.setWordWrap(True)
+        root.addWidget(note)
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Buscar…")
+        self.search.textChanged.connect(self.apply_filter)
+        self.source = QComboBox()
+        self.source.addItems(self.FILTERS)
+        self.source.currentIndexChanged.connect(self.apply_filter)
+        top.addWidget(self.search, 1)
+        top.addWidget(self.source)
+        root.addLayout(top)
+        self.list = QListWidget()
+        for entry in self.entries:
+            known = apps.has_profile(cfg, entry)
+            item = QListWidgetItem(f"{entry['name']}   ·   {entry['source']}" + ("   (ya tiene perfil)" if known else ""))
+            if known:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            else:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        self.list.itemChanged.connect(self.update_count)
+        root.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        mark = QPushButton("Marcar los visibles")
+        mark.clicked.connect(lambda: self.mark_visible(True))
+        clear = QPushButton("Desmarcar")
+        clear.clicked.connect(lambda: self.mark_visible(False))
+        row.addWidget(mark)
+        row.addWidget(clear)
+        row.addStretch(1)
+        self.create = QPushButton()
+        self.create.setObjectName("primary")
+        self.create.clicked.connect(self.accept)
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(self.create)
+        row.addWidget(cancel)
+        root.addLayout(row)
+        self.apply_filter()
+        self.update_count()
+
+    def visible(self, entry: dict) -> bool:
+        wanted = self.source.currentText()
+        if wanted == "Juegos" and entry["source"] == apps.APP_SOURCE:
+            return False
+        if wanted == "Aplicaciones" and entry["source"] != apps.APP_SOURCE:
+            return False
+        if wanted in apps.GAME_SOURCES and entry["source"] != wanted:
+            return False
+        return self.search.text().strip().lower() in entry["name"].lower()
+
+    def apply_filter(self) -> None:
+        for i, entry in enumerate(self.entries):
+            self.list.item(i).setHidden(not self.visible(entry))
+
+    def mark_visible(self, on: bool) -> None:
+        state = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if (not item.isHidden() or not on) and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(state)
+
+    def chosen(self) -> list[dict]:
+        return [e for i, e in enumerate(self.entries) if self.list.item(i).checkState() == Qt.CheckState.Checked
+                and self.list.item(i).flags() & Qt.ItemFlag.ItemIsUserCheckable]
+
+    def update_count(self, *_) -> None:
+        n = len(self.chosen())
+        self.create.setText(f"Crear {n} perfil{'es' if n != 1 else ''}")
+        self.create.setEnabled(n > 0)
+
+
 class MainWindow(QMainWindow):
     stateChanged = pyqtSignal()
 
@@ -1384,7 +1471,7 @@ class MainWindow(QMainWindow):
         self.profile_list.setFixedWidth(260)
         self.profile_list.currentRowChanged.connect(self.show_rules)
         side.addWidget(self.profile_list, 1)
-        for text, fn in (("Nuevo perfil", self.add_profile), ("Duplicar", self.duplicate_profile), ("Eliminar", self.delete_profile), ("Añadir juegos de Steam", self.add_steam)):
+        for text, fn in (("Nuevo perfil", self.add_profile), ("Duplicar", self.duplicate_profile), ("Eliminar", self.delete_profile), ("Añadir apps y juegos…", self.add_installed)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             side.addWidget(b)
@@ -1402,11 +1489,14 @@ class MainWindow(QMainWindow):
         self.rule_steam.setPlaceholderText("570, 730")
         self.rule_title = QLineEdit()
         self.rule_title.setPlaceholderText("Expresión regular sobre el título")
+        self.rule_path = QLineEdit()
+        self.rule_path.setPlaceholderText("/ruta/al/juego; otra/carpeta (para Heroic, Lutris…)")
         form.addRow("Nombre", self.rule_name)
         form.addRow("Ejecutable", self.rule_exe)
         form.addRow("Clase de ventana", self.rule_class)
         form.addRow("Steam AppID", self.rule_steam)
         form.addRow("Título", self.rule_title)
+        form.addRow("Carpeta", self.rule_path)
         body.addLayout(form)
         row = QHBoxLayout()
         take = QPushButton("Usar la última ventana activa")
@@ -1535,6 +1625,7 @@ class MainWindow(QMainWindow):
         self.rule_class.setText(", ".join(m.get("wm_class", [])))
         self.rule_steam.setText(", ".join(str(a) for a in m.get("steam_appid", [])))
         self.rule_title.setText(m.get("title", ""))
+        self.rule_path.setText("; ".join(m.get("path", [])))
         self.rule_hint.setText("El perfil por defecto se usa cuando ninguna otra regla coincide." if p.get("default") else "")
 
     def selected_rule_profile(self) -> dict:
@@ -1544,7 +1635,9 @@ class MainWindow(QMainWindow):
         p = self.selected_rule_profile()
         split = lambda w: [x.strip() for x in w.text().split(",") if x.strip()]
         p["name"] = self.rule_name.text().strip() or p["name"]
-        p["match"] = {"exe": split(self.rule_exe), "wm_class": split(self.rule_class), "steam_appid": split(self.rule_steam), "title": self.rule_title.text().strip()}
+        p["match"] = {"exe": split(self.rule_exe), "wm_class": split(self.rule_class), "steam_appid": split(self.rule_steam),
+                      "title": self.rule_title.text().strip(),
+                      "path": [x.strip() for x in self.rule_path.text().split(";") if x.strip()]}
         self.commit()
         self.reload_profiles()
 
@@ -1554,6 +1647,8 @@ class MainWindow(QMainWindow):
             return
         self.rule_exe.setText(win.proton_exe or win.exe)
         self.rule_class.setText(win.wm_class)
+        if win.proton_exe and not win.steam_appid and win.cwd:
+            self.rule_path.setText(win.cwd)  # juego de Wine/Proton fuera de Steam: su carpeta
 
     def add_profile(self) -> None:
         name, ok = QInputDialog.getText(self, "Nuevo perfil", "Nombre")
@@ -1584,16 +1679,14 @@ class MainWindow(QMainWindow):
             self.commit()
             self.reload_profiles()
 
-    def add_steam(self) -> None:
-        known = {str(a) for p in self.cfg["profiles"] for a in p["match"].get("steam_appid", [])}
-        added = 0
-        for game in scan_steam_games():
-            if game["appid"] not in known:
-                self.cfg["profiles"].append(new_profile(game["name"], {"exe": [], "wm_class": [], "steam_appid": [game["appid"]], "title": ""}))
-                added += 1
+    def add_installed(self) -> None:
+        dialog = AddProfilesDialog(self, self.cfg)
+        if not dialog.exec():
+            return
+        for entry in dialog.chosen():
+            self.cfg["profiles"].append(new_profile(entry["name"], apps.to_match(entry)))
         self.commit()
         self.reload_profiles()
-        QMessageBox.information(self, "Steam", f"Perfiles añadidos: {added}")
 
     def import_ghub(self) -> None:
         found = ghub_import.find_settings()

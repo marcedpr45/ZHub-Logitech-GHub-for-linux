@@ -21,7 +21,7 @@ Probado en CachyOS con KDE Plasma 6 sobre Wayland. La detección de ventana acti
 
 ### Juegos nativos y Proton
 
-ZHub reconoce el perfil por ejecutable, por el `.exe` que corre bajo Proton, por clase de ventana, Steam AppID o título. Botones, macros, DPI y tasa de respuesta no dependen de cómo se ejecute el juego. **Aún no se ha probado con juegos reales.**
+ZHub reconoce el perfil por ejecutable, por el `.exe` que corre bajo Proton, por clase de ventana, Steam AppID, carpeta del juego o título. Botones, macros, DPI y tasa de respuesta no dependen de cómo se ejecute el juego. **Aún no se ha probado con juegos reales.**
 
 Las curvas y los pedales combinados del G923 usan un volante virtual; algunos juegos con Proton podrían ignorarlo o ver dos volantes. Si no se usan esas opciones, el juego accede al volante real. Algunos antitrampas pueden rechazar macros o dispositivos virtuales.
 
@@ -37,7 +37,7 @@ Si el radio de giro del G923 deja de aplicarse, el controlador puede tener su co
   - Grabación de teclado, retardos editables o retardo estándar entre acciones.
   - Pasos de tecla, clic, texto (distribución US) y abrir programa.
 - Importación de perfiles, botones y macros desde una instalación de G HUB en una partición de Windows.
-- Alta de perfiles para los juegos de Steam instalados.
+- Alta de perfiles desde las apps y juegos instalados: Steam, Heroic (Epic, GOG, Amazon y añadidos a mano), Lutris y las aplicaciones del menú, incluidas las Flatpak. Los juegos de otros launchers se reconocen por su carpeta de instalación.
 - Volante y pedales del G923 en tiempo real.
 - Autocentrado activable por perfil, para juegos que centran el volante por su cuenta.
 - Por perfil, el giro y la fuerza del G923 los controla ZHub o el juego. Con ZHub, el giro se vuelve a aplicar aunque un juego con Proton lo cambie al arrancar.

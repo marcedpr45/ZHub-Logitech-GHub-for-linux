@@ -1,7 +1,8 @@
-import os, subprocess, threading, time, unittest
+import json, os, sqlite3, subprocess, tempfile, threading, time, unittest
+from pathlib import Path
 from types import SimpleNamespace
 from evdev import ecodes as e
-from zhub import assets, g600, hidpp, profiles, ghub_import, wheel
+from zhub import apps, assets, g600, hidpp, profiles, ghub_import, wheel
 from zhub.devices import G305, G600, hid_to_evdev, key_name
 from zhub.engine import Engine, Session
 
@@ -328,6 +329,66 @@ class WheelRange(unittest.TestCase):
         finally:
             wheel.write_range, Session.ff_path, engine_mod.RANGE_REASSERT = old
             s.stop.set()
+
+
+class InstalledApps(unittest.TestCase):
+    def test_folder_rule(self):
+        p = profiles.new_profile("Brotato", {"exe": [], "wm_class": [], "steam_appid": [], "title": "",
+                                             "path": ["/home/x/Games/Heroic/Brotato"]})
+        inside = profiles.WindowInfo("steam_app_default", "Brotato", cwd="/home/x/Games/Heroic/Brotato/bin")
+        self.assertTrue(profiles.matches(p, inside))
+        self.assertFalse(profiles.matches(p, profiles.WindowInfo("x", cwd="/home/x/Games/Heroic/Brotato2")))
+        root = profiles.new_profile("R", {"exe": [], "wm_class": [], "steam_appid": [], "title": "", "path": ["/"]})
+        self.assertFalse(profiles.matches(root, profiles.WindowInfo("x", cwd="/usr")))
+
+    def test_heroic_and_lutris(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Path(tmp, "heroic")
+            (h / "legendaryConfig/legendary").mkdir(parents=True)
+            (h / "legendaryConfig/legendary/installed.json").write_text(json.dumps({
+                "abc": {"title": "Brotato", "executable": "Brotato.exe", "install_path": "/games/Brotato"},
+                "dlc": {"title": "DLC", "is_dlc": True, "install_path": "/games/DLC"}}))
+            (h / "gog_store").mkdir()
+            (h / "gog_store/installed.json").write_text(json.dumps({"installed": [{"appName": "1", "install_path": "/games/FlatOut"}]}))
+            (h / "store_cache").mkdir()
+            (h / "store_cache/gog_library.json").write_text(json.dumps({"games": [{"app_name": "1", "title": "FlatOut"}]}))
+            games = {g["name"]: g for g in apps.heroic_games([h])}
+            self.assertEqual(set(games), {"Brotato", "FlatOut"})
+            self.assertEqual(games["Brotato"]["match"]["path"], ["/games/Brotato"])
+            self.assertEqual(games["Brotato"]["match"]["exe"], ["Brotato.exe"])
+
+            l = Path(tmp, "lutris")
+            (l / "games").mkdir(parents=True)
+            con = sqlite3.connect(l / "pga.db")
+            con.execute("CREATE TABLE games (name, runner, directory, configpath, service, service_id, installed)")
+            con.execute("INSERT INTO games VALUES ('EA App', 'wine', '/p/ea', 'ea-1', NULL, NULL, 1)")
+            con.execute("INSERT INTO games VALUES ('Valheim', 'steam', NULL, 'steam-1', 'steam', '892970', 1)")
+            con.commit(); con.close()
+            (l / "games/ea-1.yml").write_text("game:\n  exe: drive_c/EA/EALauncher.exe\n  prefix: /p/ea\nname: EA App\n")
+            [ea] = apps.lutris_games([l])
+            self.assertEqual(ea["match"]["path"], ["/p/ea/drive_c/EA"])
+            self.assertEqual(ea["match"]["exe"], [])  # un lanzador genérico no sirve como regla
+
+    def test_desktop_apps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "org.kde.dolphin.desktop").write_text("[Desktop Entry]\nType=Application\nName=Dolphin\nExec=dolphin %u\n")
+            (d / "game.desktop").write_text("[Desktop Entry]\nType=Application\nName=Juego\nExec=steam steam://rungameid/550\n")
+            (d / "hidden.desktop").write_text("[Desktop Entry]\nType=Application\nName=Oculta\nExec=x\nNoDisplay=true\n")
+            (d / "com.spotify.Client.desktop").write_text("[Desktop Entry]\nType=Application\nName=Spotify\n"
+                                                          "Exec=/usr/bin/flatpak run --branch=stable com.spotify.Client @@u %U @@\n")
+            found = {a["name"]: a["match"] for a in apps.desktop_apps([d])}
+            self.assertEqual(set(found), {"Dolphin", "Spotify"})
+            self.assertEqual(found["Dolphin"]["exe"], ["dolphin"])
+            self.assertEqual(found["Dolphin"]["wm_class"], ["org.kde.dolphin"])
+            self.assertEqual(found["Spotify"]["wm_class"], ["com.spotify.Client"])
+
+    def test_existing_profiles_are_marked(self):
+        cfg = profiles.default_config()
+        cfg["profiles"].append(profiles.new_profile("X", {"exe": [], "wm_class": [], "steam_appid": ["550"], "title": ""}))
+        self.assertTrue(apps.has_profile(cfg, apps._entry("Steam", "Left 4 Dead 2", steam_appid=["550"])))
+        self.assertTrue(apps.has_profile(cfg, apps._entry("Aplicación", "escritorio")))
+        self.assertFalse(apps.has_profile(cfg, apps._entry("Epic", "Brotato", path=["/games/Brotato"])))
 
 
 class OwnWindow(unittest.TestCase):
