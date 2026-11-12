@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -50,6 +51,12 @@ QComboBox QAbstractItemView { background: #24272d; selection-background-color: #
 QListWidget, QTableWidget { background: transparent; border: 0; outline: 0; }
 QListWidget::item { padding: 11px; }
 QListWidget::item:selected { background: #17191d; color: #00b8fc; border-left: 2px solid #00b8fc; }
+QListWidget#picker::item { padding: 8px 11px; }
+QListWidget#picker::item:hover { background: #15171a; }
+QListWidget#picker::item:disabled { color: #6b717c; }
+QListWidget#picker::indicator { width: 18px; height: 18px; border: 2px solid #8d939e; border-radius: 3px; background: #0b0c0e; margin-right: 8px; }
+QListWidget#picker::indicator:hover { border-color: #00b8fc; }
+QListWidget#picker::indicator:checked { border: 2px solid #00b8fc; background: #00b8fc; image: url(CHECK_ICON); }
 QTabWidget::pane { border: 0; }
 QTabBar::tab { background: transparent; padding: 8px 16px; color: #8d939e; }
 QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #00b8fc; }
@@ -1280,7 +1287,8 @@ class AddProfilesDialog(QDialog):
         self.entries = apps.scan_all()
         root = QVBoxLayout(self)
         note = heading("Marca las apps y juegos para los que quieres un perfil. Los juegos de Heroic y Lutris "
-                       "se reconocen por su carpeta de instalación; las aplicaciones, por su ventana.", "muted")
+                       "se reconocen por su carpeta de instalación; las aplicaciones, por su ventana. Los que ya tienen "
+                       "perfil solo aparecen al buscarlos.", "muted")
         note.setWordWrap(True)
         root.addWidget(note)
         top = QHBoxLayout()
@@ -1294,9 +1302,10 @@ class AddProfilesDialog(QDialog):
         top.addWidget(self.source)
         root.addLayout(top)
         self.list = QListWidget()
-        for entry in self.entries:
-            known = apps.has_profile(cfg, entry)
-            item = QListWidgetItem(f"{entry['name']}   ·   {entry['source']}" + ("   (ya tiene perfil)" if known else ""))
+        self.list.setObjectName("picker")
+        self.known = [apps.has_profile(cfg, entry) for entry in self.entries]
+        for entry, known in zip(self.entries, self.known):
+            item = QListWidgetItem(f"{entry['name']}   ·   {entry['source']}" + ("   — ya tiene un perfil" if known else ""))
             if known:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             else:
@@ -1335,8 +1344,11 @@ class AddProfilesDialog(QDialog):
         return self.search.text().strip().lower() in entry["name"].lower()
 
     def apply_filter(self) -> None:
+        searching = bool(self.search.text().strip())
         for i, entry in enumerate(self.entries):
-            self.list.item(i).setHidden(not self.visible(entry))
+            # Los que ya tienen perfil solo estorban: se muestran únicamente al buscarlos
+            hidden = not self.visible(entry) or (self.known[i] and not searching)
+            self.list.item(i).setHidden(hidden)
 
     def mark_visible(self, on: bool) -> None:
         state = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
@@ -1725,6 +1737,21 @@ class MainWindow(QMainWindow):
             self.hide()
 
 
+CHECK_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 8.5l3.2 3.2L13 4.8" '
+             'fill="none" stroke="#04131b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
+def style() -> str:
+    """Hoja de estilo con la marca de las casillas (Qt solo la carga desde un archivo)."""
+    icon = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "zhub-check.svg"
+    try:
+        if not icon.exists() or icon.read_text() != CHECK_SVG:
+            icon.write_text(CHECK_SVG)
+    except OSError:
+        return QSS.replace("image: url(CHECK_ICON);", "")
+    return QSS.replace("CHECK_ICON", str(icon))
+
+
 def app_icon() -> QIcon:
     pix = QPixmap(64, 64)
     pix.fill(Qt.GlobalColor.transparent)
@@ -1755,7 +1782,7 @@ def main() -> int:
     app.setApplicationName("ZHub")
     app.setDesktopFileName("zhub")
     app.setQuitOnLastWindowClosed(False)
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(style())
     app.setWindowIcon(app_icon())
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
     signal.signal(signal.SIGINT, lambda *_: app.quit())
